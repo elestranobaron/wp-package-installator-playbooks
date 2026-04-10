@@ -4,19 +4,20 @@ on:
     branches: [ main ]
     paths:
       - 'playbooks/**/info.json'
-  workflow_dispatch: # Permet de lancer le bouton manuellement si besoin
+      - '.github/workflows/**' # On surveille aussi le workflow lui-même
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4 # Passage en v4 pour Node 24
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Récupère tout l'historique pour éviter les soucis de rebase
 
       - name: Generate Manifest
         run: |
-          # On cherche tous les info.json, on les fusionne proprement avec jq
-          # Le flag -s (slurp) crée automatiquement le tableau avec les virgules
           find playbooks -name "info.json" | xargs cat | jq -s '{version: "1.0.0", packages: .}' > manifest.json
           
       - name: Commit and Push
@@ -24,15 +25,11 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           
-          # 1. On récupère les changements distants (tes modifs de workflow)
-          # Le rebase permet de mettre le manifest "au-dessus" proprement
-          git pull --rebase origin main
-          
-          # 2. On ajoute le fichier généré
           git add manifest.json
           
-          # 3. On commit seulement s'il y a du nouveau
+          # On commit seulement s'il y a un changement
           git commit -m "chore: auto-update manifest.json [skip ci]" || exit 0
           
-          # 4. On pousse enfin
-          git push origin main
+          # On tente un pull rebase, et si ça rejette encore, on force
+          git pull --rebase origin main
+          git push origin main || git push --force origin main
