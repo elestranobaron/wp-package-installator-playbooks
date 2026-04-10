@@ -1,1 +1,10 @@
-
+{
+  "id": "redis",
+  "name": "Redis Standalone",
+  "category": "Database",
+  "description": "Instance Redis simple pour le cache ou les files d'attente.",
+  "playbook": "playbooks/redis/main.yml",
+  "options": [
+    { "key": "redis_port", "label": "Port", "type": "number", "default": 6379 }
+  ]
+}
