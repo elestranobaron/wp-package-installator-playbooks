@@ -19,11 +19,14 @@ jobs:
           # Le flag -s (slurp) crée automatiquement le tableau avec les virgules
           find playbooks -name "info.json" | xargs cat | jq -s '{version: "1.0.0", packages: .}' > manifest.json
           
-      - name: Commit and Push
+      - - name: Commit and Push
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
+          
+          # On récupère les derniers changements pour éviter le conflit
+          git pull --rebase origin main
+          
           git add manifest.json
-          # Le "|| exit 0" évite que le job échoue s'il n'y a aucun changement
           git commit -m "chore: auto-update manifest.json [skip ci]" || exit 0
           git push
