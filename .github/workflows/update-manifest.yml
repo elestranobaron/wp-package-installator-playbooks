@@ -24,11 +24,11 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           
-          # On ajoute le fichier généré
+          # On ajoute le manifest généré
           git add manifest.json
           
-          # On commit seulement s'il y a des changements
+          # On commit seulement s'il y a un changement (évite les erreurs vides)
           git commit -m "chore: auto-update manifest.json [skip ci]" || exit 0
           
-          # On force le push pour écraser les erreurs de synchronisation
+          # On écrase le conflit distant avec --force
           git push --force origin main
