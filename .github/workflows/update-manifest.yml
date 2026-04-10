@@ -24,11 +24,15 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           
-          # On ajoute le manifest généré
+          # 1. On récupère les changements distants (tes modifs de workflow)
+          # Le rebase permet de mettre le manifest "au-dessus" proprement
+          git pull --rebase origin main
+          
+          # 2. On ajoute le fichier généré
           git add manifest.json
           
-          # On commit seulement s'il y a un changement (évite les erreurs vides)
+          # 3. On commit seulement s'il y a du nouveau
           git commit -m "chore: auto-update manifest.json [skip ci]" || exit 0
           
-          # On écrase le conflit distant avec --force
-          git push --force origin main
+          # 4. On pousse enfin
+          git push origin main
