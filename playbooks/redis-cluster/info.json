@@ -1,1 +1,10 @@
-
+{
+  "id": "redis-cluster",
+  "name": "Redis Cluster",
+  "category": "Database",
+  "description": "Cluster Redis haute disponibilité (3 maîtres, 3 esclaves).",
+  "playbook": "playbooks/redis-cluster/main.yml",
+  "options": [
+    { "key": "start_port", "label": "Port de départ", "type": "number", "default": 7000 }
+  ]
+}
