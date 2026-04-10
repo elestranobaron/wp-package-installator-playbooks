@@ -1,1 +1,7 @@
-
+---
+- hosts: localhost
+  connection: local
+  tasks:
+    - name: "Check"
+      debug:
+        msg: "Installation de {{ ansible_playbook_python }} pour le service {{ id }}"
