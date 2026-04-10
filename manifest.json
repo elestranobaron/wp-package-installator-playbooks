@@ -1,0 +1,35 @@
+{"version": "1.0.0", "packages": [
+{
+  "id": "redis-cluster",
+  "name": "Redis Cluster",
+  "category": "Database",
+  "description": "Cluster Redis haute disponibilité (3 maîtres, 3 esclaves).",
+  "playbook": "playbooks/redis-cluster/main.yml",
+  "options": [
+    { "key": "start_port", "label": "Port de départ", "type": "number", "default": 7000 }
+  ]
+}
+{
+  "id": "mariadb",
+  "name": "MariaDB Server",
+  "category": "Database",
+  "description": "Base de données SQL relationnelle.",
+  "playbook": "playbooks/mariadb/main.yml",
+  "options": [
+    { "key": "db_root_password", "label": "Mot de passe Root", "type": "password", "default": "secret" },
+    { "key": "db_port", "label": "Port", "type": "number", "default": 3306 }
+  ]
+}
+
+
+{
+  "id": "redis",
+  "name": "Redis Standalone",
+  "category": "Database",
+  "description": "Instance Redis simple pour le cache ou les files d'attente.",
+  "playbook": "playbooks/redis/main.yml",
+  "options": [
+    { "key": "redis_port", "label": "Port", "type": "number", "default": 6379 }
+  ]
+}
+]}
