@@ -1,0 +1,8 @@
+{
+  "id": "dummy-check",
+  "name": "Dummy Healthcheck",
+  "version": "1.0.0",
+  "author": "Automation",
+  "description": "Playbook de test ultra-léger pour vérifier la liaison Ansible.",
+  "category": "Maintenance"
+}
