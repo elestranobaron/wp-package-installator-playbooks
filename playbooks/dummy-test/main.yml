@@ -1,0 +1,33 @@
+---
+- name: "Infrastructure Unit Test"
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  tasks:
+    - name: "CHECK 1: Permission d'écriture sur /tmp"
+      copy:
+        content: "Vérification OK"
+        dest: /tmp/ansible_unit_test.tmp
+        mode: '0644'
+
+    - name: "CHECK 2: Test de connectivité réseau (Google DNS)"
+      command: ping -c 1 8.8.8.8
+      register: ping_result
+      changed_when: false
+
+    - name: "CHECK 3: Vérification présence de Docker"
+      command: docker --version
+      register: docker_check
+      ignore_errors: yes
+
+    - name: "RÉSUMÉ DU TEST"
+      debug:
+        msg: 
+          - "Écriture /tmp: SUCCESS"
+          - "Réseau: {{ 'UP' if ping_result.rc == 0 else 'DOWN' }}"
+          - "Docker: {{ docker_check.stdout if docker_check.rc == 0 else 'NON DÉTECTÉ' }}"
+
+    - name: "NETTOYAGE"
+      file:
+        path: /tmp/ansible_unit_test.tmp
+        state: absent
