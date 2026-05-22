@@ -1,0 +1,35 @@
+# Radio 42 — API de contrôle
+# Image légère basée sur Python slim
+FROM python:3.12-slim
+
+LABEL maintainer="Thomas Lloancy"
+LABEL description="Radio 42 Control API"
+
+# Dépendances système minimales
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Dépendances Python
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Code applicatif
+COPY radio_api.py .
+
+# Dossiers de données
+RUN mkdir -p /music /playlists /var/log/radio42
+
+# Utilisateur non-root
+RUN useradd -r -s /bin/false radio42 \
+    && chown -R radio42:radio42 /app /var/log/radio42
+USER radio42
+
+EXPOSE 5000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:5000/health || exit 1
+
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--timeout", "30", "radio_api:app"]

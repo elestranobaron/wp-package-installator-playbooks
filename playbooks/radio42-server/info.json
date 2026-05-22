@@ -1,0 +1,77 @@
+{
+  "id": "radio42-server",
+  "name": "Radio 42 Server",
+  "category": "Media",
+  "description": "Déploie un serveur de diffusion radio complet via Docker : MPD (lecteur), Icecast2 (streaming), Liquidsoap (mixage/live) et une API REST de contrôle pour le plugin WordPress Radio Control Center. Zéro pollution de l'hôte.",
+  "playbook": "playbooks/radio42-server/main.yml",
+  "icon": "📻",
+  "author": "Thomas Lloancy",
+  "version": "1.0.0",
+  "requires": ["docker", "docker-compose-plugin"],
+  "options": [
+    {
+      "key": "stream_name",
+      "label": "Nom de la radio",
+      "type": "text",
+      "default": "Ma Radio 42",
+      "required": true
+    },
+    {
+      "key": "stream_description",
+      "label": "Description du flux",
+      "type": "text",
+      "default": "Powered by Radio 42"
+    },
+    {
+      "key": "icecast_port",
+      "label": "Port public Icecast",
+      "type": "number",
+      "default": 8000
+    },
+    {
+      "key": "api_port",
+      "label": "Port API de contrôle",
+      "type": "number",
+      "default": 5000
+    },
+    {
+      "key": "live_harbor_port",
+      "label": "Port live micro (Harbor Liquidsoap)",
+      "type": "number",
+      "default": 8005
+    },
+    {
+      "key": "icecast_source_password",
+      "label": "Mot de passe source Icecast",
+      "type": "password",
+      "default": "",
+      "required": true
+    },
+    {
+      "key": "icecast_admin_password",
+      "label": "Mot de passe admin Icecast",
+      "type": "password",
+      "default": "",
+      "required": true
+    },
+    {
+      "key": "api_secret_key",
+      "label": "Clé secrète API (token WordPress)",
+      "type": "password",
+      "default": "",
+      "required": true
+    },
+    {
+      "key": "music_dir",
+      "label": "Dossier musique sur l'hôte",
+      "type": "text",
+      "default": "/opt/radio42/music"
+    },
+    {
+      "key": "deploy_dir",
+      "label": "Dossier de déploiement",
+      "type": "text",
+      "default": "/opt/radio42"
+    }
+  ]
+}

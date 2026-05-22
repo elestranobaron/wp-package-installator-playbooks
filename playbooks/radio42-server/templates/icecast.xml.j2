@@ -1,0 +1,76 @@
+<?xml version="1.0"?>
+<!-- Icecast2 Configuration — Radio 42 -->
+<!-- Généré par Ansible — ne pas modifier manuellement -->
+<icecast>
+
+  <location>{{ stream_name }}</location>
+  <admin>admin@radio42.local</admin>
+  <server-name>{{ stream_name }}</server-name>
+
+  <!-- Limites de connexion -->
+  <limits>
+    <clients>100</clients>
+    <sources>5</sources>
+    <queue-size>524288</queue-size>
+    <client-timeout>30</client-timeout>
+    <header-timeout>15</header-timeout>
+    <source-timeout>10</source-timeout>
+    <burst-on-connect>1</burst-on-connect>
+    <burst-size>65535</burst-size>
+  </limits>
+
+  <!-- Authentification -->
+  <authentication>
+    <source-password>{{ icecast_source_password }}</source-password>
+    <relay-password>{{ icecast_relay_password }}</relay-password>
+    <admin-user>admin</admin-user>
+    <admin-password>{{ icecast_admin_password }}</admin-password>
+  </authentication>
+
+  <!-- Point de montage principal -->
+  <mount type="normal">
+    <mount-name>/stream</mount-name>
+    <stream-name>{{ stream_name }}</stream-name>
+    <stream-description>{{ stream_description }}</stream-description>
+    <stream-url>http://localhost:8000/stream</stream-url>
+    <genre>Various</genre>
+    <public>0</public>
+    <hidden>0</hidden>
+    <!-- Fallback si Liquidsoap déconnecte -->
+    <on-disconnect>
+      <send-header>200</send-header>
+    </on-disconnect>
+  </mount>
+
+  <!-- Hostname (réseau interne Docker) -->
+  <hostname>icecast</hostname>
+
+  <!-- Ports (interne Docker, le mapping hôte est dans Compose) -->
+  <listen-socket>
+    <port>8000</port>
+  </listen-socket>
+
+  <!-- Fichiers statiques Icecast -->
+  <paths>
+    <basedir>/usr/share/icecast2</basedir>
+    <logdir>/var/log/icecast2</logdir>
+    <webroot>/usr/share/icecast2/web</webroot>
+    <adminroot>/usr/share/icecast2/admin</adminroot>
+    <pidfile>/var/run/icecast2/icecast2.pid</pidfile>
+    <alias source="/" destination="/status.xsl"/>
+  </paths>
+
+  <!-- Logging -->
+  <logging>
+    <accesslog>access.log</accesslog>
+    <errorlog>error.log</errorlog>
+    <loglevel>3</loglevel>
+    <logsize>10000</logsize>
+  </logging>
+
+  <!-- Sécurité -->
+  <security>
+    <chroot>0</chroot>
+  </security>
+
+</icecast>
