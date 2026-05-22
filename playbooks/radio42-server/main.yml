@@ -4,7 +4,7 @@
 # Déploiement Docker cross-plateforme (Debian, Ubuntu, Raspbian, Arch, Fedora)
 # Stack : MPD + Icecast2 + Liquidsoap + API REST de contrôle
 # =============================================================================
-
+# Radio 42 Server Playbook — Thomas Lloancy — Unlicense
 - name: Deploy Radio 42 Server (Docker)
   hosts: all
   become: true
