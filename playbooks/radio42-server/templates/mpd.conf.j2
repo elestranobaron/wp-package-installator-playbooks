@@ -1,0 +1,47 @@
+# MPD Configuration — Radio 42
+# Généré par Ansible — ne pas modifier manuellement
+
+music_directory     "/music"
+playlist_directory  "/playlists"
+db_file             "/var/lib/mpd/mpd.db"
+log_file            "/var/log/mpd/mpd.log"
+state_file          "/var/lib/mpd/mpdstate"
+sticker_file        "/var/lib/mpd/sticker.sql"
+
+# Liaison réseau interne Docker uniquement
+bind_to_address     "0.0.0.0"
+port                "{{ mpd_port }}"
+
+# Pas d'audio local — MPD envoie vers Icecast via FIFO ou httpd
+# Liquidsoap récupère via ce flux interne
+
+audio_output {
+    type        "httpd"
+    name        "{{ stream_name }} Internal"
+    encoder     "lame"
+    port        "8080"
+    bitrate     "320"
+    format      "44100:16:2"
+    max_clients "0"
+    always_on   "yes"
+}
+
+# FIFO pour Liquidsoap (fallback / analyse)
+audio_output {
+    type        "fifo"
+    name        "liquidsoap_fifo"
+    path        "/tmp/mpd.fifo"
+    format      "44100:16:2"
+}
+
+# Paramètres audio
+audio_output_format     "44100:16:2"
+mixer_type              "software"
+
+# Comportement
+auto_update             "yes"
+follow_outside_symlinks "no"
+follow_inside_symlinks  "yes"
+
+# Logging
+log_level               "default"

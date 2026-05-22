@@ -1,0 +1,77 @@
+#!/usr/bin/liquidsoap
+# =============================================================================
+# Radio 42 — Script Liquidsoap
+# Gère : source MPD, mode live micro, transitions, fallback
+# Généré par Ansible — ne pas modifier manuellement
+# =============================================================================
+
+# ── Logging ───────────────────────────────────────────────────────────────
+log.file.path := "/var/log/liquidsoap/radio42.log"
+log.level := 3
+
+# ── Source principale : MPD via son flux HTTP interne ─────────────────────
+# MPD expose un flux httpd sur le port 8080 (réseau interne Docker)
+mpd_source = mksafe(
+  input.http(
+    "http://mpd:8080",
+    timeout=10.0
+  )
+)
+
+# ── Source live : entrée micro/line (via Harbor HTTP) ─────────────────────
+# Le DJ se connecte via Icecast source client ou via l'API
+# Harbor écoute les connexions source entrantes
+live_source = input.harbor(
+  "live",
+  port=8005,
+  password="{{ icecast_source_password }}",
+  max=10.0,
+  buffer=2.0
+)
+
+# ── Fichier de fallback silence (évite le silence total) ─────────────────
+silence = blank(duration=0.0)
+
+# ── Logique de bascule auto ↔ live ───────────────────────────────────────
+# Si une source live est connectée, elle prend la priorité
+# Sinon, on reste sur MPD
+radio = fallback(
+  track_sensitive=false,
+  [live_source, mpd_source, silence]
+)
+
+# ── Normalisation audio (confort d'écoute) ───────────────────────────────
+radio = normalize(
+  target=0.0,
+  window=0.03,
+  gain_min=-6.0,
+  gain_max=6.0,
+  radio
+)
+
+# ── Métadonnées : enrichissement du flux ─────────────────────────────────
+radio = map_metadata(
+  fun(m) ->
+    let title = m["title"] in
+    let artist = m["artist"] in
+    if title != "" then
+      [("title", artist ^ " - " ^ title)]
+    else
+      [("title", "{{ stream_name }}")]
+    end,
+  radio
+)
+
+# ── Sortie vers Icecast ───────────────────────────────────────────────────
+output.icecast(
+  %mp3(bitrate=320),
+  host="icecast",
+  port=8000,
+  password="{{ icecast_source_password }}",
+  mount="/stream",
+  name="{{ stream_name }}",
+  description="{{ stream_description }}",
+  genre="Various",
+  public=false,
+  radio
+)

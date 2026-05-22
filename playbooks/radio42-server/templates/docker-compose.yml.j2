@@ -1,0 +1,117 @@
+# =============================================================================
+# Radio 42 Server — Docker Compose Stack
+# Généré par Ansible — ne pas modifier manuellement
+# =============================================================================
+
+services:
+
+  # ── Icecast2 : serveur de streaming public ──────────────────────────────
+  icecast:
+    image: libretime/icecast:latest
+    container_name: radio42_icecast
+    restart: unless-stopped
+    ports:
+      - "{{ icecast_port }}:8000"
+    volumes:
+      - {{ deploy_dir }}/config/icecast/icecast.xml:/etc/icecast2/icecast.xml:ro
+      - {{ deploy_dir }}/logs:/var/log/icecast2
+    networks:
+      - {{ docker_network }}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/status.xsl"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ── MPD : Music Player Daemon ────────────────────────────────────────────
+  mpd:
+    image: viranch/mpd:latest
+    container_name: radio42_mpd
+    restart: unless-stopped
+    # MPD port intentionnellement non exposé à l'extérieur
+    # L'API est le seul point d'entrée de contrôle
+    expose:
+      - "{{ mpd_port }}"
+    volumes:
+      - {{ music_dir }}:/music:ro
+      - {{ deploy_dir }}/playlists:/playlists
+      - {{ deploy_dir }}/config/mpd/mpd.conf:/etc/mpd.conf:ro
+      - {{ deploy_dir }}/data/mpd:/var/lib/mpd
+    networks:
+      - {{ docker_network }}
+    healthcheck:
+      test: ["CMD", "mpc", "status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ── Liquidsoap : moteur de mixage et mode live ───────────────────────────
+  liquidsoap:
+    image: savonet/liquidsoap:latest
+    container_name: radio42_liquidsoap
+    restart: unless-stopped
+    ports:
+      - "{{ live_harbor_port }}:8005"
+    depends_on:
+      mpd:
+        condition: service_healthy
+      icecast:
+        condition: service_healthy
+    volumes:
+      - {{ deploy_dir }}/config/liquidsoap/radio.liq:/etc/liquidsoap/radio.liq:ro
+      - {{ music_dir }}:/music:ro
+      - {{ deploy_dir }}/logs:/var/log/liquidsoap
+    networks:
+      - {{ docker_network }}
+    command: ["/etc/liquidsoap/radio.liq"]
+    healthcheck:
+      test: ["CMD-SHELL", "liquidsoap --check /etc/liquidsoap/radio.liq || exit 0"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 20s
+
+  # ── API de contrôle : pont WordPress ↔ MPD/Liquidsoap ───────────────────
+  api:
+    build:
+      context: {{ deploy_dir }}/config/api
+      dockerfile: Dockerfile
+    image: radio42_api:local
+    container_name: radio42_api
+    restart: unless-stopped
+    depends_on:
+      mpd:
+        condition: service_healthy
+      icecast:
+        condition: service_healthy
+    ports:
+      - "{{ api_port }}:5000"
+    environment:
+      - MPD_HOST=mpd
+      - MPD_PORT={{ mpd_port }}
+      - ICECAST_HOST=icecast
+      - ICECAST_PORT=8000
+      - ICECAST_ADMIN_PASSWORD={{ icecast_admin_password }}
+      - API_SECRET_KEY={{ api_secret_key }}
+      - MUSIC_DIR=/music
+      - PLAYLISTS_DIR=/playlists
+      - FLASK_ENV=production
+    volumes:
+      - {{ music_dir }}:/music
+      - {{ deploy_dir }}/playlists:/playlists
+      - {{ deploy_dir }}/logs:/var/log/radio42
+    networks:
+      - {{ docker_network }}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  {{ docker_network }}:
+    driver: bridge
+    name: {{ docker_network }}
