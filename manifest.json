@@ -2,6 +2,61 @@
   "version": "1.0.0",
   "packages": [
     {
+      "name": "Freqtrade",
+      "description": "Free and open-source crypto trading bot written in Python. It is designed to support all major exchanges and be controlled via Telegram or a WebUI.",
+      "version": "1.0.0",
+      "category": "Trading",
+      "icon": "dashicons-chart-line",
+      "options": [
+        {
+          "id": "freqtrade_dir",
+          "type": "text",
+          "label": "Installation Directory",
+          "default": "/opt/freqtrade",
+          "description": "Absolute path where Freqtrade data and configuration will be stored."
+        },
+        {
+          "id": "freqtrade_port",
+          "type": "number",
+          "label": "WebUI Port",
+          "default": 8080,
+          "description": "The port used to access the Freqtrade internal web interface."
+        },
+        {
+          "id": "freqtrade_dry_run",
+          "type": "boolean",
+          "label": "Enable Dry-Run (Sandbox)",
+          "default": true,
+          "description": "Keep this enabled to trade with simulated money safely. Disable for live trading."
+        }
+      ]
+    },
+    {
+      "id": "redis",
+      "name": "Redis Standalone",
+      "category": "Database",
+      "description": "Instance Redis simple pour le cache ou les files d'attente.",
+      "playbook": "playbooks/redis/main.yml",
+      "options": [
+        {
+          "key": "redis_port",
+          "label": "Port",
+          "type": "number",
+          "default": 6379
+        }
+      ]
+    },
+    {
+      "id": "dummy-check",
+      "name": "Dummy Healthcheck",
+      "version": "1.0.0",
+      "author": "Automation",
+      "category": "Maintenance",
+      "description": "Playbook de test ultra-léger pour vérifier la liaison Ansible.",
+      "playbook": "playbooks/dummy-test/main.yml",
+      "options": []
+    },
+    {
       "id": "redis-cluster",
       "name": "Redis Cluster",
       "category": "Database",
@@ -114,31 +169,6 @@
           "label": "Dossier de déploiement",
           "type": "text",
           "default": "/opt/radio42"
-        }
-      ]
-    },
-    {
-      "id": "dummy-check",
-      "name": "Dummy Healthcheck",
-      "version": "1.0.0",
-      "author": "Automation",
-      "category": "Maintenance",
-      "description": "Playbook de test ultra-léger pour vérifier la liaison Ansible.",
-      "playbook": "playbooks/dummy-test/main.yml",
-      "options": []
-    },
-    {
-      "id": "redis",
-      "name": "Redis Standalone",
-      "category": "Database",
-      "description": "Instance Redis simple pour le cache ou les files d'attente.",
-      "playbook": "playbooks/redis/main.yml",
-      "options": [
-        {
-          "key": "redis_port",
-          "label": "Port",
-          "type": "number",
-          "default": 6379
         }
       ]
     }
