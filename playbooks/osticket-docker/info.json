@@ -1,0 +1,22 @@
+{
+  "name": "osTicket (Docker)",
+  "description": "Déploiement du célèbre gestionnaire de tickets osTicket via Docker-Compose, adossé à une base MySQL.",
+  "options": [
+    {
+      "name": "osticket_port",
+      "type": "number",
+      "default": 8080,
+      "label": "Port public pour accéder à l'interface osTicket"
+    },
+    {
+      "name": "mysql_root_password",
+      "type": "password",
+      "label": "Mot de passe Root MySQL"
+    },
+    {
+      "name": "osticket_db_password",
+      "type": "password",
+      "label": "Mot de passe de la base osTicket"
+    }
+  ]
+}

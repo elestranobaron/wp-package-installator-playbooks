@@ -1,0 +1,41 @@
+{
+  "name": "WordPress (Natif Multi-Distro)",
+  "description": "Installation complète de WordPress avec Apache (backend), Nginx (proxy inverse), MariaDB, Fail2Ban et Certbot SSL automatique.",
+  "options": [
+    {
+      "name": "wp_db_name",
+      "type": "text",
+      "default": "wordpress",
+      "label": "Nom de la base de données MySQL"
+    },
+    {
+      "name": "wp_db_user",
+      "type": "text",
+      "default": "wordpress",
+      "label": "Utilisateur MySQL"
+    },
+    {
+      "name": "wp_db_password",
+      "type": "password",
+      "label": "Mot de passe Root & User MySQL (Sera aussi utilisé pour sécuriser l'installation)"
+    },
+    {
+      "name": "apache_port",
+      "type": "number",
+      "default": 8080,
+      "label": "Port d'écoute interne Apache (HTTP)"
+    },
+    {
+      "name": "apache_ssl_port",
+      "type": "number",
+      "default": 8081,
+      "label": "Port d'écoute interne Apache (HTTPS)"
+    },
+    {
+      "name": "wordpress_install_dir",
+      "type": "text",
+      "default": "/var/www/html/wordpress",
+      "label": "Répertoire d'installation de WordPress (RedHat/Arch)"
+    }
+  ]
+}

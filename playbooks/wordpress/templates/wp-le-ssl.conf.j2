@@ -1,0 +1,27 @@
+<IfModule mod_ssl.c>
+<VirtualHost *:{{ apache_ssl_port }}>
+    ServerName {{ domain_name }}
+    ServerAlias www.{{ domain_name }}
+    ServerAdmin webmaster@localhost
+    DocumentRoot {{ webroot_path }}
+
+    Alias /wp-content {{ wp_content_dir }}
+    <Directory {{ webroot_path }}>
+        Options FollowSymLinks
+        AllowOverride Limit Options FileInfo
+        DirectoryIndex index.php
+        Require all granted
+    </Directory>
+    <Directory {{ wp_content_dir }}>
+        Options FollowSymLinks
+        Require all granted
+    </Directory>
+
+    ErrorLog {{ '/var/log/apache2/wp-error.log' if ansible_os_family == 'Debian' else '/var/log/httpd/wp-error.log' if ansible_os_family == 'RedHat' else '/var/log/httpd/wp_error_log' }}
+    CustomLog {{ '/var/log/apache2/wp-access.log' if ansible_os_family == 'Debian' else '/var/log/httpd/wp-access.log' if ansible_os_family == 'RedHat' else '/var/log/httpd/wp_access_log' }} combined
+
+    RewriteEngine on
+    SSLCertificateFile /etc/letsencrypt/live/{{ domain_name }}/fullchain.pem
+    SSLCertificateKeyFile /etc/letsencrypt/live/{{ domain_name }}/privkey.pem
+</VirtualHost>
+</IfModule>

@@ -1,0 +1,55 @@
+---
+- name: Deploy osTicket via Docker Compose
+  hosts: all
+  become: true
+  vars:
+    app_dir: "/opt/osticket-docker"
+
+  tasks:
+    - name: Ensure application directory exists
+      file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: 1000
+        group: 1000
+        mode: '0755'
+
+    - name: Deploy docker-compose.yml configuration
+      copy:
+        dest: "{{ app_dir }}/docker-compose.yml"
+        owner: 1000
+        group: 1000
+        mode: '0644'
+        content: |
+          version: '3'
+          services:
+            osticket_db:
+              image: mysql:8.0
+              container_name: osticket_db
+              restart: always
+              environment:
+                MYSQL_ROOT_PASSWORD: "{{ mysql_root_password }}"
+                MYSQL_DATABASE: osticket
+                MYSQL_USER: osticket
+                MYSQL_PASSWORD: "{{ osticket_db_password }}"
+              volumes:
+                - ./db_data:/var/lib/mysql
+
+            osticket_app:
+              image: osticket/osticket:latest
+              container_name: osticket_app
+              restart: always
+              ports:
+                - "{{ osticket_port }}:80"
+              environment:
+                - DBHOST=osticket_db
+                - DBNAME=osticket
+                - DBUSER=osticket
+                - DBPASS={{ osticket_db_password }}
+              depends_on:
+                - osticket_db
+
+    - name: Start osTicket Stack via Docker Compose
+      docker_compose:
+        project_src: "{{ app_dir }}"
+        state: present

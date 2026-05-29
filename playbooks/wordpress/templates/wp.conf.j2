@@ -1,0 +1,15 @@
+<VirtualHost *:{{ apache_port }}>
+    ServerName {{ domain_name }}
+    ServerAlias www.{{ domain_name }}
+    ServerAdmin webmaster@localhost
+    DocumentRoot {{ webroot_path }}
+
+    ErrorLog {{ '/var/log/apache2/wp-error.log' if ansible_os_family == 'Debian' else '/var/log/httpd/wp-error.log' if ansible_os_family == 'RedHat' else '/var/log/httpd/wp_error_log' }}
+    CustomLog {{ '/var/log/apache2/wp-access.log' if ansible_os_family == 'Debian' else '/var/log/httpd/wp-access.log' if ansible_os_family == 'RedHat' else '/var/log/httpd/wp_access_log' }} combined
+
+    RewriteEngine on
+    RewriteCond %{SERVER_NAME} =www.{{ domain_name }} [OR]
+    RewriteCond %{SERVER_NAME} ={{ domain_name }}
+    RewriteCond %{REQUEST_URI} !/.well-known/acme-challenge/
+    RewriteRule ^ https://%{SERVER_NAME}%{REQUEST_URI} [END,NE,R=permanent]
+</VirtualHost>
