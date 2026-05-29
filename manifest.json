@@ -93,6 +93,87 @@
       ]
     },
     {
+      "name": "osTicket (Docker)",
+      "description": "Déploiement du célèbre gestionnaire de tickets osTicket via Docker-Compose, adossé à une base MySQL.",
+      "options": [
+        {
+          "name": "osticket_port",
+          "type": "number",
+          "default": 8080,
+          "label": "Port public pour accéder à l'interface osTicket"
+        },
+        {
+          "name": "mysql_root_password",
+          "type": "password",
+          "label": "Mot de passe Root MySQL"
+        },
+        {
+          "name": "osticket_db_password",
+          "type": "password",
+          "label": "Mot de passe de la base osTicket"
+        }
+      ]
+    },
+    {
+      "name": "Forgejo (Docker)",
+      "description": "Instance Git Forgejo auto-hébergée légère et souveraine, alternative libre à GitHub.",
+      "options": [
+        {
+          "name": "forgejo_web_port",
+          "type": "number",
+          "default": 3000,
+          "label": "Port d'accès Web HTTP"
+        },
+        {
+          "name": "forgejo_ssh_port",
+          "type": "number",
+          "default": 2222,
+          "label": "Port d'écoute pour les interactions SSH Git"
+        }
+      ]
+    },
+    {
+      "name": "WordPress (Natif Multi-Distro)",
+      "description": "Installation complète de WordPress avec Apache (backend), Nginx (proxy inverse), MariaDB, Fail2Ban et Certbot SSL automatique.",
+      "options": [
+        {
+          "name": "wp_db_name",
+          "type": "text",
+          "default": "wordpress",
+          "label": "Nom de la base de données MySQL"
+        },
+        {
+          "name": "wp_db_user",
+          "type": "text",
+          "default": "wordpress",
+          "label": "Utilisateur MySQL"
+        },
+        {
+          "name": "wp_db_password",
+          "type": "password",
+          "label": "Mot de passe Root & User MySQL (Sera aussi utilisé pour sécuriser l'installation)"
+        },
+        {
+          "name": "apache_port",
+          "type": "number",
+          "default": 8080,
+          "label": "Port d'écoute interne Apache (HTTP)"
+        },
+        {
+          "name": "apache_ssl_port",
+          "type": "number",
+          "default": 8081,
+          "label": "Port d'écoute interne Apache (HTTPS)"
+        },
+        {
+          "name": "wordpress_install_dir",
+          "type": "text",
+          "default": "/var/www/html/wordpress",
+          "label": "Répertoire d'installation de WordPress (RedHat/Arch)"
+        }
+      ]
+    },
+    {
       "id": "radio42-server",
       "name": "Radio 42 Server",
       "category": "Media",
