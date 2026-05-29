@@ -1,0 +1,486 @@
+---
+- name: Install and configure WordPress with Apache, Nginx, and SSL
+  hosts: all
+  become: yes
+  vars:
+    domain_name: "{{ inventory_hostname }}"
+    wordpress_download_url: "https://wordpress.org/latest.tar.gz"
+    certbot_webroot_path: "{{ webroot_path | default(wordpress_install_dir) }}"
+
+  tasks:
+    - name: Gather facts
+      setup:
+
+    - name: Set variables for Debian family
+      set_fact:
+        package_manager: apt
+        web_server: apache2
+        db_server: mariadb-server
+        firewall: ufw
+        wordpress_package: wordpress
+        apache_conf_dir: /etc/apache2/sites-available
+        apache_enabled_dir: /etc/apache2/sites-enabled
+        apache_ports_conf: /etc/apache2/ports.conf
+        wp_content_dir: /var/lib/wordpress/wp-content
+        webroot_path: /usr/share/wordpress
+        service_suffix: ""
+        mysql_service: mysql
+        wp_config_path: /usr/share/wordpress/wp-config.php
+        wp_host_config_path: "/etc/wordpress/config-{{ domain_name }}.php"
+      when: ansible_os_family == 'Debian'
+
+    - name: Set variables for RedHat family (including Fedora)
+      set_fact:
+        package_manager: dnf
+        web_server: httpd
+        db_server: mariadb-server
+        firewall: firewalld
+        wordpress_package: none
+        apache_conf_dir: /etc/httpd/conf.d
+        apache_enabled_dir: /etc/httpd/conf.d
+        apache_ports_conf: /etc/httpd/conf/httpd.conf
+        wp_content_dir: "{{ wordpress_install_dir }}/wp-content"
+        webroot_path: "{{ wordpress_install_dir }}"
+        service_suffix: ""
+        mysql_service: mariadb
+        wp_config_path: "{{ wordpress_install_dir }}/wp-config.php"
+        wp_host_config_path: "{{ wordpress_install_dir }}/wp-config.php"
+      when: ansible_os_family == 'RedHat'
+
+    - name: Set variables for Arch Linux
+      set_fact:
+        package_manager: pacman
+        web_server: apache
+        db_server: mariadb
+        firewall: ufw
+        wordpress_package: none
+        apache_conf_dir: /etc/httpd/conf/extra
+        apache_enabled_dir: /etc/httpd/conf
+        apache_ports_conf: /etc/httpd/conf/httpd.conf
+        wp_content_dir: "{{ wordpress_install_dir }}/wp-content"
+        webroot_path: "{{ wordpress_install_dir }}"
+        service_suffix: ".service"
+        mysql_service: mariadb
+        wp_config_path: "{{ wordpress_install_dir }}/wp-config.php"
+        wp_host_config_path: "{{ wordpress_install_dir }}/wp-config.php"
+      when: ansible_distribution == 'Archlinux'
+
+    - name: Update apt cache (Debian)
+      apt:
+        update_cache: yes
+      when: ansible_os_family == 'Debian'
+
+    - name: Update dnf cache (RedHat/Fedora)
+      dnf:
+        update_cache: yes
+      when: ansible_os_family == 'RedHat'
+
+    - name: Update pacman cache (Arch)
+      pacman:
+        update_cache: yes
+      when: ansible_distribution == 'Archlinux'
+
+    - name: Install packages (Debian)
+      apt:
+        name:
+          - "{{ wordpress_package if wordpress_package != 'none' else omit }}"
+          - curl
+          - "{{ web_server }}"
+          - "{{ db_server }}"
+          - iputils-ping
+          - python3-passlib
+          - "{{ firewall }}"
+          - fail2ban
+          - certbot
+          - python3-certbot-apache
+        state: present
+      when: ansible_os_family == 'Debian'
+
+    - name: Install packages (RedHat/Fedora)
+      dnf:
+        name:
+          - curl
+          - "{{ web_server }}"
+          - "{{ db_server }}"
+          - iputils
+          - python3-passlib
+          - "{{ firewall }}"
+          - fail2ban
+          - certbot
+          - python3-certbot-apache
+        state: present
+      when: ansible_os_family == 'RedHat'
+
+    - name: Install packages (Arch)
+      pacman:
+        name:
+          - curl
+          - "{{ web_server }}"
+          - "{{ db_server }}"
+          - iputils
+          - python-passlib
+          - "{{ firewall }}"
+          - fail2ban
+          - certbot-apache
+        state: present
+      when: ansible_distribution == 'Archlinux'
+
+    - name: Create WordPress install directory (RedHat/Fedora and Arch)
+      file:
+        path: "{{ wordpress_install_dir }}"
+        state: directory
+        owner: "{{ 'apache' if ansible_os_family == 'RedHat' or ansible_distribution == 'Archlinux' else 'www-data' }}"
+        group: "{{ 'apache' if ansible_os_family == 'RedHat' or ansible_distribution == 'Archlinux' else 'www-data' }}"
+        mode: '0755'
+      when: wordpress_package == 'none'
+
+    - name: Download and extract WordPress (RedHat/Fedora and Arch)
+      unarchive:
+        src: "{{ wordpress_download_url }}"
+        dest: "{{ wordpress_install_dir | dirname }}"
+        remote_src: yes
+        creates: "{{ wordpress_install_dir }}/wp-config.php"
+        owner: "{{ 'apache' if ansible_os_family == 'RedHat' or ansible_distribution == 'Archlinux' else 'www-data' }}"
+        group: "{{ 'apache' if ansible_os_family == 'RedHat' or ansible_distribution == 'Archlinux' else 'www-data' }}"
+        mode: '0755'
+      when: wordpress_package == 'none'
+
+    - name: Run mysql_secure_installation
+      command: mysql_secure_installation
+      args:
+        creates: /root/.my.cnf
+      environment:
+        MYSQL_ROOT_PASSWORD: "{{ wp_db_password }}"
+      ignore_errors: yes
+
+    - name: Create MySQL systemd override directory
+      file:
+        path: "/etc/systemd/system/{{ mysql_service }}.service.d"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Configure MySQL systemd service for restarts
+      copy:
+        content: |
+          [Service]
+          Restart=always
+          RestartSec=5
+          StartLimitIntervalSec=60
+          StartLimitBurst=3
+        dest: "/etc/systemd/system/{{ mysql_service }}.service.d/override.conf"
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Reload systemd and restart MySQL
+
+    - name: Create WordPress database
+      mysql_db:
+        name: "{{ wp_db_name }}"
+        state: present
+      ignore_errors: yes
+
+    - name: Create WordPress database user
+      mysql_user:
+        name: "{{ wp_db_user }}"
+        password: "{{ wp_db_password }}"
+        host: localhost
+        priv: "{{ wp_db_name }}.*:SELECT,INSERT,UPDATE,DELETE,CREATE,DROP,ALTER"
+        state: present
+      ignore_errors: yes
+
+    - name: Create Apache virtual host configuration for HTTP
+      template:
+        src: templates/wp.conf.j2
+        dest: "{{ apache_conf_dir }}/wp.conf"
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Reload Apache
+
+    - name: Create Apache virtual host configuration for HTTPS
+      template:
+        src: templates/wp-le-ssl.conf.j2
+        dest: "{{ apache_conf_dir }}/wp-le-ssl.conf"
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Reload Apache
+
+    - name: Configure Apache ports (Debian)
+      template:
+        src: templates/ports.conf.j2
+        dest: "{{ apache_ports_conf }}"
+        owner: root
+        group: root
+        mode: '0644'
+      when: ansible_os_family == 'Debian'
+      notify: Reload Apache
+
+    - name: Append Apache ports to httpd.conf (RedHat/Fedora and Arch)
+      lineinfile:
+        path: "{{ apache_ports_conf }}"
+        line: "{{ item }}"
+        state: present
+      loop:
+        - "Listen {{ apache_port }}"
+        - "<IfModule ssl_module>"
+        - "    Listen {{ apache_ssl_port }}"
+        - "</IfModule>"
+      when: ansible_os_family == 'RedHat' or ansible_distribution == 'Archlinux'
+      notify: Reload Apache
+
+    - name: Enable Apache modules (Debian)
+      apache2_module:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - rewrite
+        - vhost_alias
+        - ssl
+      when: ansible_os_family == 'Debian'
+      notify: Restart Apache
+
+    - name: Enable Apache modules (RedHat/Fedora and Arch)
+      lineinfile:
+        path: "{{ apache_ports_conf }}"
+        regexp: "^#LoadModule {{ item.module }}_module"
+        line: "LoadModule {{ item.module }}_module modules/{{ item.file }}"
+        state: present
+      loop:
+        - { module: "rewrite", file: "mod_rewrite.so" }
+        - { module: "vhost_alias", file: "mod_vhost_alias.so" }
+        - { module: "ssl", file: "mod_ssl.so" }
+      when: ansible_os_family == 'RedHat' or ansible_distribution == 'Archlinux'
+      notify: Restart Apache
+
+    - name: Disable default Apache site (Debian)
+      command: a2dissite 000-default
+      args:
+        removes: "{{ apache_enabled_dir }}/000-default.conf"
+      when: ansible_os_family == 'Debian'
+      notify: Reload Apache
+
+    - name: Enable WordPress Apache site (Debian)
+      command: a2ensite wp
+      args:
+        creates: "{{ apache_enabled_dir }}/wp.conf"
+      when: ansible_os_family == 'Debian'
+      notify: Reload Apache
+
+    - name: Create WordPress master configuration file (Debian)
+      template:
+        src: templates/wp-config-debian.php.j2
+        dest: "{{ wp_config_path }}"
+        owner: "{{ 'apache' if ansible_os_family == 'RedHat' or ansible_distribution == 'Archlinux' else 'www-data' }}"
+        group: "{{ 'apache' if ansible_os_family == 'RedHat' or ansible_distribution == 'Archlinux' else 'www-data' }}"
+        mode: '0644'
+      when: ansible_os_family == 'Debian'
+
+    - name: Create WordPress host-specific configuration file (Debian)
+      template:
+        src: templates/config-domain.php.j2
+        dest: "{{ wp_host_config_path }}"
+        owner: "{{ 'apache' if ansible_os_family == 'RedHat' or ansible_distribution == 'Archlinux' else 'www-data' }}"
+        group: "{{ 'apache' if ansible_os_family == 'RedHat' or ansible_distribution == 'Archlinux' else 'www-data' }}"
+        mode: '0644'
+      when: ansible_os_family == 'Debian'
+
+    - name: Create WordPress configuration file (RedHat/Fedora and Arch)
+      template:
+        src: templates/wp-config.php.j2
+        dest: "{{ wp_config_path }}"
+        owner: "{{ 'apache' if ansible_os_family == 'RedHat' or ansible_distribution == 'Archlinux' else 'www-data' }}"
+        group: "{{ 'apache' if ansible_os_family == 'RedHat' or ansible_distribution == 'Archlinux' else 'www-data' }}"
+        mode: '0644'
+      when: ansible_os_family == 'RedHat' or ansible_distribution == 'Archlinux'
+
+    - name: Install Nginx
+      package:
+        name: nginx
+        state: present
+
+    - name: Create Nginx proxy configuration
+      template:
+        src: templates/wp-proxy.conf.j2
+        dest: /etc/nginx/conf.d/wp-proxy.conf
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Reload Nginx
+
+    - name: Allow ports 22, 80, and 443 in UFW (Debian/Arch)
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - 22
+        - 80
+        - 443
+      when: firewall == 'ufw'
+
+    - name: Enable UFW (Debian/Arch)
+      ufw:
+        state: enabled
+        policy: deny
+      when: firewall == 'ufw'
+
+    - name: Allow ports 22, 80, and 443 in firewalld (RedHat/Fedora)
+      firewalld:
+        port: "{{ item }}/tcp"
+        permanent: yes
+        state: enabled
+        immediate: yes
+      loop:
+        - 22
+        - 80
+        - 443
+      when: firewall == 'firewalld'
+
+    - name: Configure Fail2Ban jail.local
+      lineinfile:
+        path: /etc/fail2ban/jail.local
+        line: "backend = auto"
+        create: yes
+        state: present
+
+    - name: Create Fail2Ban XML-RPC filter
+      copy:
+        content: |
+          [Definition]
+          failregex = ^<HOST>.*(GET|POST).*xmlrpc\.php.*
+          ignoreregex =
+        dest: /etc/fail2ban/filter.d/xmlrpc.conf
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Create Fail2Ban Apache GET DoS filter
+      copy:
+        content: |
+          [INCLUDES]
+          before = common.conf
+          [Definition]
+          failregex = ^<HOST> .*"GET (?!\/robots\.txt).*" (301|401|403|404|499|501|503|504)\s
+        dest: /etc/fail2ban/filter.d/apache-get-dos.local
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Configure Fail2Ban jails for WordPress
+      copy:
+        content: |
+          [xmlrpc]
+          enabled = true
+          filter = xmlrpc
+          action = iptables-multiport[name=xmlrpc, port="http,https", protocol=tcp]
+          logpath = {{ '/var/log/apache2/access.log' if ansible_os_family == 'Debian' else '/var/log/httpd/access.log' if ansible_os_family == 'RedHat' else '/var/log/httpd/access_log' }}
+                    /var/log/nginx/access.log
+          maxretry = 5
+          bantime = 3600
+
+          [apache-get-dos]
+          enabled = true
+          filter = apache-get-dos
+          action = iptables-multiport[name=apache-get-dos, port="http,https", protocol=tcp]
+          logpath = {{ '/var/log/apache2/access.log' if ansible_os_family == 'Debian' else '/var/log/httpd/access.log' if ansible_os_family == 'RedHat' else '/var/log/httpd/access_log' }}
+                    /var/log/nginx/access.log
+          maxretry = 5
+          bantime = 3600
+        dest: /etc/fail2ban/jail.d/wordpress.conf
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Restart Fail2Ban
+
+    - name: Configure cron jobs for Certbot and server restarts
+      cron:
+        name: "{{ item.name }}"
+        minute: "{{ item.minute }}"
+        hour: "{{ item.hour }}"
+        job: "{{ item.job }}"
+        state: present
+      loop:
+        - name: Renew Certbot
+          minute: "58"
+          hour: "0"
+          job: "/usr/bin/certbot renew --webroot --webroot-path {{ certbot_webroot_path }} --quiet >> /tmp/error.log 2>&1"
+        - name: Restart Apache
+          minute: "7"
+          hour: "1"
+          job: "/usr/bin/systemctl restart {{ web_server }}{{ service_suffix }}"
+        - name: Restart Nginx
+          minute: "7"
+          hour: "1"
+          job: "/usr/bin/systemctl restart nginx{{ service_suffix }}"
+
+    - name: Unzip and set executable permissions for setup-mysql script (Debian)
+      shell: |
+        gzip -d /usr/share/doc/wordpress/examples/setup-mysql.gz
+        chmod +x /usr/share/doc/wordpress/examples/setup-mysql
+      args:
+        creates: /usr/share/doc/wordpress/examples/setup-mysql
+      when: ansible_os_family == 'Debian'
+
+    - name: Run WordPress setup-mysql script (Debian)
+      command: /usr/share/doc/wordpress/examples/setup-mysql "{{ domain_name }}"
+      args:
+        creates: "/etc/wordpress/config-{{ domain_name }}.php"
+      when: ansible_os_family == 'Debian'
+
+    - name: Ensure Apache is running
+      service:
+        name: "{{ web_server }}{{ service_suffix }}"
+        state: started
+        enabled: yes
+
+    - name: Ensure Nginx is running
+      service:
+        name: "nginx{{ service_suffix }}"
+        state: started
+        enabled: yes
+
+    - name: Ensure MySQL is running
+      service:
+        name: "{{ mysql_service }}{{ service_suffix }}"
+        state: started
+        enabled: yes
+
+    - name: Ensure Fail2Ban is running
+      service:
+        name: "fail2ban{{ service_suffix }}"
+        state: started
+        enabled: yes
+
+  handlers:
+    - name: Reload Apache
+      service:
+        name: "{{ web_server }}{{ service_suffix }}"
+        state: reloaded
+
+    - name: Restart Apache
+      service:
+        name: "{{ web_server }}{{ service_suffix }}"
+        state: restarted
+
+    - name: Reload Nginx
+      service:
+        name: "nginx{{ service_suffix }}"
+        state: reloaded
+
+    - name: Restart Fail2Ban
+      service:
+        name: "fail2ban{{ service_suffix }}"
+        state: restarted
+
+    - name: Reload systemd and restart MySQL
+      block:
+        - name: Reload systemd daemon
+          command: systemctl daemon-reload
+        - name: Restart MySQL
+          service:
+            name: "{{ mysql_service }}{{ service_suffix }}"
+            state: restarted
+            enabled: yes

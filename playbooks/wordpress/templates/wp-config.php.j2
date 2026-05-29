@@ -1,0 +1,17 @@
+<?php
+define('DB_NAME', '{{ wp_db_name }}');
+define('DB_USER', '{{ wp_db_user }}');
+define('DB_PASSWORD', '{{ wp_db_password }}');
+define('DB_HOST', 'localhost');
+define('WP_CONTENT_DIR', '{{ wp_content_dir }}');
+define('WP_HOME', 'http://{{ domain_name }}');
+define('WP_SITEURL', 'http://{{ domain_name }}/wp');
+define('WP_CACHE', true);
+define('WP_ALLOW_MULTISITE', true);
+$table_prefix = 'wp_';
+if (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] == 'https') {
+    $_SERVER['HTTPS'] = 'on';
+}
+define('ABSPATH', dirname(__FILE__) . '/');
+require_once(ABSPATH . 'wp-settings.php');
+?>
