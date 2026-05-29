@@ -1,0 +1,66 @@
+---
+- name: Deploy Freqtrade
+  hosts: localhost
+  connection: local
+  become: true
+  vars:
+    # Les valeurs par défaut si non transmises par WP
+    freqtrade_dir: "/opt/freqtrade"
+    freqtrade_port: 8080
+    freqtrade_dry_run: true
+    freqtrade_version: "stable"
+
+  tasks:
+    - name: Ensure target directory exists
+      file:
+        path: "{{ freqtrade_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Check if user_data directory already exists
+      stat:
+        path: "{{ freqtrade_dir }}/user_data"
+      register: user_data_dir
+
+    - name: Initialize user_data directory structure via Freqtrade Docker
+      command: >
+        docker run --rm
+        -v {{ freqtrade_dir }}/user_data:/freqtrade/user_data
+        freqtradeorg/freqtrade:{{ freqtrade_version }}
+        create-userdir --userdir /freqtrade/user_data
+      when: not user_data_dir.stat.exists
+
+    - name: Fix user_data permissions for Freqtrade non-root user (1000:1000)
+      file:
+        path: "{{ freqtrade_dir }}/user_data"
+        state: directory
+        owner: 1000
+        group: 1000
+        recurse: true
+
+    - name: Configure dry_run mode in config.json
+      lineinfile:
+        path: "{{ freqtrade_dir }}/user_data/config.json"
+        regexp: '"dry_run":'
+        line: '    "dry_run": {{ freqtrade_dry_run | lower }},'
+      when: not user_data_dir.stat.exists
+
+    - name: Write docker-compose.yml configuration
+      copy:
+        dest: "{{ freqtrade_dir }}/docker-compose.yml"
+        mode: '0644'
+        content: |
+          services:
+            freqtrade:
+              image: freqtradeorg/freqtrade:{{ freqtrade_version }}
+              restart: unless-stopped
+              ports:
+                - "{{ freqtrade_port }}:8080"
+              volumes:
+                - ./user_data:/freqtrade/user_data
+              command: trade --strategy SampleStrategy
+
+    - name: Start Freqtrade container service
+      community.docker.docker_compose_v2:
+        project_src: "{{ freqtrade_dir }}"
+        state: present
