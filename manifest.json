@@ -6,7 +6,7 @@
       "description": "Free and open-source crypto trading bot written in Python. It is designed to support all major exchanges and be controlled via Telegram or a WebUI.",
       "version": "1.0.0",
       "category": "Trading",
-      "icon": "dashicons-chart-line",
+      "icon": "📈",
       "options": [
         {
           "id": "freqtrade_dir",
