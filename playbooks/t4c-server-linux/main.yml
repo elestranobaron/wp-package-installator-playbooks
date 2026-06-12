@@ -346,6 +346,18 @@
             )
           }}
 
+    - name: Check Vircom runtime before git clone (for backup)
+      shell: |
+        WDA="{{ docker_runtime_dir }}/WDA/T4C Worlds.WDA"
+        test -f "$WDA" && test "$(stat -c%s "$WDA")" -ge {{ wda_min_bytes }}
+      register: runtime_backup_needed
+      changed_when: false
+      failed_when: false
+
+    - name: Backup docker/runtime before git clone
+      shell: rm -rf /tmp/t4c-runtime-backup && rsync -a "{{ docker_runtime_dir }}/" /tmp/t4c-runtime-backup/
+      when: runtime_backup_needed.rc == 0
+
     - name: Clone t4c-server-linux at release tag
       git:
         repo: "https://github.com/{{ github_repo }}.git"
@@ -354,31 +366,31 @@
         force: yes
         depth: 1
 
+    - name: Restore docker/runtime backup after git clone
+      shell: rsync -a /tmp/t4c-runtime-backup/ "{{ docker_runtime_dir }}/"
+      when: runtime_backup_needed.rc == 0
+
     - name: Ensure docker/runtime directory exists
       file:
         path: "{{ docker_runtime_dir }}"
         state: directory
         mode: "0755"
 
-    # ── Assets Vircom (MEGA) ──────────────────────────────────────────────
-    - name: Check if Vircom assets already deployed (valid WDA size)
+    # ── Assets Vircom (MEGA / sync locale) ────────────────────────────────
+    - name: Verify WDA in docker/runtime
       shell: |
         WDA="{{ docker_runtime_dir }}/WDA/T4C Worlds.WDA"
         test -f "$WDA" && test "$(stat -c%s "$WDA")" -ge {{ wda_min_bytes }}
-      register: deployed_assets_check
+      register: wda_ready
       changed_when: false
       failed_when: false
 
-    - name: Set deployed assets OK flag
-      set_fact:
-        deployed_assets_ok: "{{ deployed_assets_check.rc == 0 }}"
-
-    - name: Check local MEGA-synced assets
+    - name: Check local asset source path
       stat:
         path: "{{ t4c_assets_dir }}/WDA/T4C Worlds.WDA"
-      register: local_assets
+      register: local_wda
 
-    - name: Sync local MEGA assets into docker/runtime
+    - name: Sync assets from t4c_assets_dir
       shell: |
         rsync -a \
           --exclude='logs/' \
@@ -387,87 +399,93 @@
           "{{ docker_runtime_dir }}/"
       args:
         executable: /bin/bash
-      when: local_assets.stat.exists
-
-    - name: Install MEGAcmd on Debian
-      apt:
-        deb: "https://mega.nz/linux/repo/Debian_12/amd64/megacmd_2.1.1-1.1_amd64.deb"
-      failed_when: false
       when:
-        - not deployed_assets_ok | bool
-        - not local_assets.stat.exists
-        - ansible_os_family == "Debian"
+        - wda_ready.rc != 0
+        - local_wda.stat.exists
 
-    - name: Download assets from MEGA public folder
+    - name: Re-verify WDA after local sync
       shell: |
-        rm -rf "{{ t4c_staging_assets }}"
-        mkdir -p "{{ t4c_staging_assets }}"
-        mega-get "{{ mega_server_url }}" "{{ t4c_staging_assets }}"
-      args:
-        executable: /bin/bash
-      when:
-        - not deployed_assets_ok | bool
-        - not local_assets.stat.exists
-        - ansible_os_family == "Debian"
-      register: mega_dl
-      failed_when: false
-
-    - name: Install megatools on Arch
-      shell: pacman -Sy --noconfirm megatools
-      when:
-        - not deployed_assets_ok | bool
-        - not local_assets.stat.exists
-        - ansible_os_family == "Archlinux"
-      failed_when: false
-
-    - name: Download assets from MEGA via megatools
-      shell: |
-        rm -rf "{{ t4c_staging_assets }}"
-        mkdir -p "{{ t4c_staging_assets }}"
-        megadl --path="{{ t4c_staging_assets }}" "{{ mega_server_url }}"
-      args:
-        executable: /bin/bash
-      when:
-        - not deployed_assets_ok | bool
-        - not local_assets.stat.exists
-        - ansible_os_family == "Archlinux"
-      register: mega_dl_arch
-      failed_when: false
-
-    - name: Find WDA after MEGA download
-      shell: find "{{ t4c_staging_assets }}" -name 'T4C Worlds.WDA' | head -1
-      register: wda_path
+        WDA="{{ docker_runtime_dir }}/WDA/T4C Worlds.WDA"
+        test -f "$WDA" && test "$(stat -c%s "$WDA")" -ge {{ wda_min_bytes }}
+      register: wda_ready
       changed_when: false
       failed_when: false
-      when:
-        - not deployed_assets_ok | bool
-        - not local_assets.stat.exists
+      when: local_wda.stat.exists
 
-    - name: Sync MEGA download into docker/runtime
-      shell: |
-        WDA="{{ wda_path.stdout | trim }}"
-        MEGA_RUNTIME="$(dirname "$(dirname "$WDA")")"
-        rsync -a --exclude='logs/' --exclude='SQL/' "${MEGA_RUNTIME}/" "{{ docker_runtime_dir }}/"
-      args:
-        executable: /bin/bash
-      when:
-        - not deployed_assets_ok | bool
-        - not local_assets.stat.exists
-        - wda_path.stdout | default('') | trim | length > 0
+    - name: Download Vircom assets from MEGA when still missing
+      when: wda_ready.rc != 0
+      block:
+        - name: Install megatools (Debian/Arch — MEGAcmd Debian 12 deb incompatible Buster)
+          apt:
+            name: megatools
+            state: present
+          failed_when: false
+          when: ansible_os_family == "Debian"
 
-    - name: Assert Vircom assets are present
-      stat:
-        path: "{{ docker_runtime_dir }}/WDA/T4C Worlds.WDA"
-      register: wda_final
+        - name: Install megatools on Arch
+          shell: pacman -Sy --noconfirm megatools
+          failed_when: false
+          when: ansible_os_family == "Archlinux"
 
-    - name: Fail if Vircom assets missing
-      assert:
-        that:
-          - wda_final.stat.exists
-        fail_msg: >
-          Assets Vircom introuvables dans {{ docker_runtime_dir }}.
-          Sync MEGA vers t4c_assets_dir={{ t4c_assets_dir }}
-          ou verifiez mega_server_url.
+        - name: Download MEGA folder with megadl
+          shell: |
+            rm -rf "{{ t4c_staging_assets }}"
+            mkdir -p "{{ t4c_staging_assets }}"
+            megadl --path="{{ t4c_staging_assets }}" "{{ mega_server_url }}"
+          args:
+            executable: /bin/bash
+          register: mega_dl
+
+        - name: Locate WDA in MEGA staging tree
+          shell: |
+            find "{{ t4c_staging_assets }}" -name 'T4C Worlds.WDA' -size +{{ wda_min_bytes }}c 2>/dev/null | head -1
+          register: wda_staging_path
+          changed_when: false
+          failed_when: false
+
+        - name: Fail with diagnostics when MEGA provision failed
+          fail:
+            msg: |
+              Impossible de provisionner les assets Vircom dans {{ docker_runtime_dir }}.
+
+              Local {{ t4c_assets_dir }} : {{ 'trouve' if local_wda.stat.exists else 'ABSENT sur ce serveur' }}
+              megadl rc={{ mega_dl.rc | default('?') }} stderr={{ mega_dl.stderr | default('') | trim }}
+              WDA dans staging : {{ wda_staging_path.stdout | default('') | trim | default('non trouve', true) }}
+
+              Actions :
+                1) Copie manuelle :
+                   rsync -a {{ t4c_assets_dir }}/ {{ docker_runtime_dir }}/
+                2) Ou sync MEGA Desktop vers {{ t4c_assets_dir }} sur CE serveur
+                3) Ou verifier mega_server_url dans le dashboard
+          when:
+            - mega_dl.rc | default(1) != 0 or wda_staging_path.stdout | trim | length == 0
+
+        - name: Sync MEGA staging into docker/runtime
+          shell: |
+            WDA="{{ wda_staging_path.stdout | trim }}"
+            RUNTIME="${WDA%/WDA/T4C Worlds.WDA}"
+            test -n "$RUNTIME" && test -d "$RUNTIME/WDA"
+            rsync -a --exclude='logs/' --exclude='SQL/' "${RUNTIME}/" "{{ docker_runtime_dir }}/"
+          args:
+            executable: /bin/bash
+
+        - name: Re-verify WDA after MEGA sync
+          shell: |
+            WDA="{{ docker_runtime_dir }}/WDA/T4C Worlds.WDA"
+            test -f "$WDA" && test "$(stat -c%s "$WDA")" -ge {{ wda_min_bytes }}
+          register: wda_ready
+          changed_when: false
+          failed_when: false
+
+    - name: Fail if Vircom assets still invalid
+      fail:
+        msg: |
+          WDA invalide ou absent : {{ docker_runtime_dir }}/WDA/T4C Worlds.WDA
+          (taille minimale {{ wda_min_bytes }} octets)
+
+          Copie manuelle depuis votre sync MEGA :
+            rsync -a {{ t4c_assets_dir }}/ {{ docker_runtime_dir }}/
+      when: wda_ready.rc != 0
 
     - name: Patch T4CServer.ini DB credentials
       lineinfile:
