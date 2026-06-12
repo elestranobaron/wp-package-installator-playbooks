@@ -26,8 +26,30 @@
     docker_runtime_dir: "{{ deploy_dir }}/docker/runtime"
     github_api: "https://api.github.com/repos/{{ github_repo }}"
     resolved_release_tag: main
+    wda_min_bytes: 1048576
 
   tasks:
+    - name: Refuse concurrent deploy if lock is recent
+      stat:
+        path: /tmp/t4c-server-deploy.lock
+      register: deploy_lock
+
+    - name: Fail when another deploy appears in progress
+      fail:
+        msg: >
+          Deploiement deja en cours (lock /tmp/t4c-server-deploy.lock).
+          Attendez la fin du run en cours. Si le lock est stale apres un Ctrl+C :
+          rm -f /tmp/t4c-server-deploy.lock puis relancez.
+      when:
+        - deploy_lock.stat.exists
+        - (ansible_date_time.epoch | int - deploy_lock.stat.mtime | default(0) | int) < 7200
+
+    - name: Create deploy lock for this run
+      file:
+        path: /tmp/t4c-server-deploy.lock
+        state: touch
+        mode: "0644"
+
     - name: Assert supported OS family
       assert:
         that:
@@ -81,101 +103,140 @@
             )
           }}
 
-    - name: Note credential source on re-run
+    - name: Detect docker compose (skip install if already OK)
+      shell: docker compose version
+      register: docker_compose_check
+      changed_when: false
+      failed_when: false
+
+    - name: Detect docker daemon (skip install if already OK)
+      shell: docker info >/dev/null 2>&1
+      register: docker_info_check
+      changed_when: false
+      failed_when: false
+
+    - name: Set docker stack ready flag
+      set_fact:
+        docker_stack_ready: "{{ docker_compose_check.rc == 0 and docker_info_check.rc == 0 }}"
+
+    - name: Note docker detection
       debug:
         msg: >-
-          Credentials DB resolues
-          (dashboard={{ (db_password | default('') | length > 0) and (db_root_password | default('') | length > 0) }},
-          .env={{ env_file.stat.exists }},
-          defaults docker-compose={{ db_password == db_password_default }})
+          Docker stack {{ 'deja present — installation sautee' if docker_stack_ready else 'absent — installation requise' }}
 
-    # ── Docker (Debian / Ubuntu) ────────────────────────────────────────
-    - name: "[Debian] Install Docker prerequisites"
-      apt:
+    - name: Ensure git and rsync are available
+      package:
         name:
-          - ca-certificates
-          - curl
-          - gnupg
-          - lsb-release
           - git
           - rsync
         state: present
-        update_cache: yes
-      when: ansible_os_family == "Debian"
+      failed_when: false
 
-    - name: "[Debian] Add Docker GPG key"
-      shell: |
-        install -m 0755 -d /etc/apt/keyrings
-        curl -fsSL https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg \
-          | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-        chmod a+r /etc/apt/keyrings/docker.gpg
-      args:
-        creates: /etc/apt/keyrings/docker.gpg
-      when: ansible_os_family == "Debian"
+    - name: Install Docker stack when missing
+      when: not docker_stack_ready | bool
+      block:
+        - name: "[Debian] Refresh apt cache (best effort)"
+          apt:
+            update_cache: yes
+            cache_valid_time: 3600
+          failed_when: false
+          when: ansible_os_family == "Debian"
 
-    - name: "[Debian] Add Docker APT repository"
-      shell: |
-        echo \
-          "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-          https://download.docker.com/linux/{{ ansible_distribution | lower }} \
-          $(. /etc/os-release && echo "${VERSION_CODENAME:-$VERSION_ID}") stable" \
-          > /etc/apt/sources.list.d/docker.list
-      args:
-        creates: /etc/apt/sources.list.d/docker.list
-      when: ansible_os_family == "Debian"
+        - name: "[Debian] Install Docker prerequisites"
+          apt:
+            name:
+              - ca-certificates
+              - curl
+              - gnupg
+              - lsb-release
+            state: present
+            update_cache: no
+          failed_when: false
+          when: ansible_os_family == "Debian"
 
-    - name: "[Debian] Install Docker Engine"
-      apt:
-        name:
-          - docker-ce
-          - docker-ce-cli
-          - containerd.io
-          - docker-buildx-plugin
-          - docker-compose-plugin
-        state: present
-        update_cache: yes
-      when: ansible_os_family == "Debian"
+        - name: "[Debian] Add Docker GPG key"
+          shell: |
+            install -m 0755 -d /etc/apt/keyrings
+            curl -fsSL https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg \
+              | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+            chmod a+r /etc/apt/keyrings/docker.gpg
+          args:
+            creates: /etc/apt/keyrings/docker.gpg
+          when: ansible_os_family == "Debian"
 
-    # ── Docker (Fedora / RHEL) ────────────────────────────────────────────
-    - name: "[RedHat] Add Docker repository"
-      shell: |
-        dnf config-manager --add-repo \
-          https://download.docker.com/linux/fedora/docker-ce.repo
-      args:
-        creates: /etc/yum.repos.d/docker-ce.repo
-      when: ansible_os_family == "RedHat"
+        - name: "[Debian] Add Docker APT repository"
+          shell: |
+            echo \
+              "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+              https://download.docker.com/linux/{{ ansible_distribution | lower }} \
+              $(. /etc/os-release && echo "${VERSION_CODENAME:-$VERSION_ID}") stable" \
+              > /etc/apt/sources.list.d/docker.list
+          args:
+            creates: /etc/apt/sources.list.d/docker.list
+          when: ansible_os_family == "Debian"
 
-    - name: "[RedHat] Install Docker Engine"
-      dnf:
-        name:
-          - docker-ce
-          - docker-ce-cli
-          - containerd.io
-          - docker-compose-plugin
-          - git
-          - rsync
-        state: present
-      when: ansible_os_family == "RedHat"
+        - name: "[Debian] Install Docker Engine"
+          apt:
+            name:
+              - docker-ce
+              - docker-ce-cli
+              - containerd.io
+              - docker-buildx-plugin
+              - docker-compose-plugin
+            state: present
+            update_cache: no
+          when: ansible_os_family == "Debian"
 
-    # ── Docker (Arch) ─────────────────────────────────────────────────────
-    - name: "[Arch] Install Docker"
-      shell: pacman -Sy --noconfirm docker docker-compose git rsync
-      args:
-        creates: /usr/bin/docker
-      when: ansible_os_family == "Archlinux"
+        - name: "[RedHat] Add Docker repository"
+          shell: |
+            dnf config-manager --add-repo \
+              https://download.docker.com/linux/fedora/docker-ce.repo
+          args:
+            creates: /etc/yum.repos.d/docker-ce.repo
+          when: ansible_os_family == "RedHat"
 
-    # ── Docker (openSUSE) ─────────────────────────────────────────────────
-    - name: "[Suse] Install Docker"
-      shell: zypper -n install docker docker-compose git rsync
-      args:
-        creates: /usr/bin/docker
-      when: ansible_os_family == "Suse"
+        - name: "[RedHat] Install Docker Engine"
+          dnf:
+            name:
+              - docker-ce
+              - docker-ce-cli
+              - containerd.io
+              - docker-compose-plugin
+            state: present
+          when: ansible_os_family == "RedHat"
+
+        - name: "[Arch] Install Docker"
+          shell: pacman -Sy --noconfirm docker docker-compose
+          args:
+            creates: /usr/bin/docker
+          when: ansible_os_family == "Archlinux"
+
+        - name: "[Suse] Install Docker"
+          shell: zypper -n install docker docker-compose
+          args:
+            creates: /usr/bin/docker
+          when: ansible_os_family == "Suse"
+
+    - name: Re-check docker compose after install attempt
+      shell: docker compose version
+      register: docker_compose_recheck
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if docker compose still unavailable
+      assert:
+        that:
+          - docker_stack_ready or docker_compose_recheck.rc == 0
+        fail_msg: >
+          Docker Compose introuvable apres tentative d installation.
+          Installez docker-ce et docker-compose-plugin manuellement, puis relancez.
 
     - name: Enable and start Docker
       systemd:
         name: docker
         enabled: yes
         state: started
+      failed_when: false
 
     # ── Release GitHub ────────────────────────────────────────────────────
     - name: Query latest GitHub release
@@ -227,10 +288,17 @@
         mode: "0755"
 
     # ── Assets Vircom (MEGA) ──────────────────────────────────────────────
-    - name: Check if Vircom assets already deployed
-      stat:
-        path: "{{ docker_runtime_dir }}/WDA/T4C Worlds.WDA"
-      register: deployed_assets
+    - name: Check if Vircom assets already deployed (valid WDA size)
+      shell: |
+        WDA="{{ docker_runtime_dir }}/WDA/T4C Worlds.WDA"
+        test -f "$WDA" && test "$(stat -c%s "$WDA")" -ge {{ wda_min_bytes }}
+      register: deployed_assets_check
+      changed_when: false
+      failed_when: false
+
+    - name: Set deployed assets OK flag
+      set_fact:
+        deployed_assets_ok: "{{ deployed_assets_check.rc == 0 }}"
 
     - name: Check local MEGA-synced assets
       stat:
@@ -253,7 +321,7 @@
         deb: "https://mega.nz/linux/repo/Debian_12/amd64/megacmd_2.1.1-1.1_amd64.deb"
       failed_when: false
       when:
-        - not deployed_assets.stat.exists
+        - not deployed_assets_ok | bool
         - not local_assets.stat.exists
         - ansible_os_family == "Debian"
 
@@ -265,7 +333,7 @@
       args:
         executable: /bin/bash
       when:
-        - not deployed_assets.stat.exists
+        - not deployed_assets_ok | bool
         - not local_assets.stat.exists
         - ansible_os_family == "Debian"
       register: mega_dl
@@ -274,7 +342,7 @@
     - name: Install megatools on Arch
       shell: pacman -Sy --noconfirm megatools
       when:
-        - not deployed_assets.stat.exists
+        - not deployed_assets_ok | bool
         - not local_assets.stat.exists
         - ansible_os_family == "Archlinux"
       failed_when: false
@@ -287,7 +355,7 @@
       args:
         executable: /bin/bash
       when:
-        - not deployed_assets.stat.exists
+        - not deployed_assets_ok | bool
         - not local_assets.stat.exists
         - ansible_os_family == "Archlinux"
       register: mega_dl_arch
@@ -299,7 +367,7 @@
       changed_when: false
       failed_when: false
       when:
-        - not deployed_assets.stat.exists
+        - not deployed_assets_ok | bool
         - not local_assets.stat.exists
 
     - name: Sync MEGA download into docker/runtime
@@ -310,7 +378,7 @@
       args:
         executable: /bin/bash
       when:
-        - not deployed_assets.stat.exists
+        - not deployed_assets_ok | bool
         - not local_assets.stat.exists
         - wda_path.stdout | default('') | trim | length > 0
 
@@ -360,12 +428,12 @@
           T4C_RUNTIME_ASSETS={{ docker_runtime_dir }}
           T4C_VERIFY_WDA_MD5={{ '1' if (t4c_verify_wda_md5 | bool) else '0' }}
 
-    - name: Build and start stack via docker/Dockerfile
+    - name: Build and start stack via docker/Dockerfile (safe to re-run after Ctrl+C)
       shell: docker compose up -d --build --remove-orphans
       args:
         chdir: "{{ deploy_dir }}"
 
-    - name: Wait for t4cserver container
+    - name: Wait for t4cserver container (boot WDA may take minutes)
       shell: docker compose ps --status running --services | grep -qx t4cserver
       args:
         chdir: "{{ deploy_dir }}"
@@ -373,6 +441,7 @@
       retries: 30
       delay: 10
       until: t4c_up.rc == 0
+      failed_when: false
 
     - name: Install systemd unit for docker compose stack
       copy:
@@ -404,6 +473,11 @@
         state: started
       when: enable_systemd | bool
 
+    - name: Remove deploy lock after run
+      file:
+        path: /tmp/t4c-server-deploy.lock
+        state: absent
+
     - name: Print deployment summary
       debug:
         msg:
@@ -414,4 +488,4 @@
           - "Assets      : {{ docker_runtime_dir }}/"
           - "Port UDP    : {{ t4c_udp_port }}"
           - "Logs        : docker compose -f {{ deploy_dir }}/docker-compose.yml logs -f t4cserver"
-          - "Attendre    : [BOOT] SERVER_READY (1-3 min)"
+          - "Relance safe : ce playbook est idempotent — Ctrl+C / refresh UI OK, relancer."
