@@ -140,15 +140,15 @@
           "key": "db_password",
           "label": "Mot de passe MariaDB T4C",
           "type": "password",
-          "default": "",
-          "required": true
+          "default": "T4Cpass2026!",
+          "description": "Vide au re-run : reutilise deploy_dir/.env ou la valeur par defaut."
         },
         {
           "key": "db_root_password",
           "label": "Mot de passe root MariaDB (conteneur)",
           "type": "password",
-          "default": "",
-          "required": true
+          "default": "t4c_root_dev",
+          "description": "Vide au re-run : reutilise deploy_dir/.env ou la valeur par defaut."
         },
         {
           "key": "t4c_verify_wda_md5",
