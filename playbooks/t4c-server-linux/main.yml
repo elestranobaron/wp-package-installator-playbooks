@@ -103,26 +103,50 @@
             )
           }}
 
-    - name: Detect docker compose (skip install if already OK)
-      shell: docker compose version
-      register: docker_compose_check
+    - name: Detect Docker stack (CLI, daemon, compose v2 plugin or v1 binary)
+      shell: |
+        docker --version >/dev/null 2>&1 || { echo "ERR: docker CLI absent"; exit 1; }
+        docker info >/dev/null 2>&1 || { echo "ERR: daemon docker injoignable (systemctl start docker ?)"; exit 1; }
+        if docker compose version >/dev/null 2>&1; then
+          echo "docker compose"
+          exit 0
+        fi
+        if COMPOSE_BIN="$(command -v docker-compose)" && "$COMPOSE_BIN" --version >/dev/null 2>&1; then
+          echo "$COMPOSE_BIN"
+          exit 0
+        fi
+        echo "ERR: ni « docker compose » (v2) ni « docker-compose » (v1) trouve"
+        exit 1
+      register: docker_detect
       changed_when: false
       failed_when: false
 
-    - name: Detect docker daemon (skip install if already OK)
-      shell: docker info >/dev/null 2>&1
-      register: docker_info_check
-      changed_when: false
-      failed_when: false
-
-    - name: Set docker stack ready flag
+    - name: Set docker stack ready flag and compose command
       set_fact:
-        docker_stack_ready: "{{ docker_compose_check.rc == 0 and docker_info_check.rc == 0 }}"
+        docker_stack_ready: "{{ docker_detect.rc == 0 }}"
+        docker_compose_cmd: "{{ docker_detect.stdout | trim }}"
+      when: docker_detect.rc == 0
 
-    - name: Note docker detection
+    - name: Set docker stack missing flag
+      set_fact:
+        docker_stack_ready: false
+        docker_compose_cmd: ""
+      when: docker_detect.rc != 0
+
+    - name: Note docker detection when already OK
       debug:
         msg: >-
-          Docker stack {{ 'deja present — installation sautee' if docker_stack_ready else 'absent — installation requise' }}
+          Docker OK sur {{ ansible_distribution }} {{ ansible_distribution_version }}
+          — compose={{ docker_compose_cmd }} — installation sautee
+      when: docker_stack_ready | bool
+
+    - name: Note docker detection when missing
+      debug:
+        msg: >-
+          Docker/Compose absent sur {{ ansible_distribution }} {{ ansible_distribution_version }}.
+          {{ docker_detect.stdout | default('') | trim }}
+          — tentative installation via paquets distro (docker.io) puis Docker.com si recent.
+      when: not docker_stack_ready | bool
 
     - name: Ensure git and rsync are available
       package:
@@ -135,57 +159,94 @@
     - name: Install Docker stack when missing
       when: not docker_stack_ready | bool
       block:
-        - name: "[Debian] Refresh apt cache (best effort)"
+        - name: "[Debian] Install docker.io + docker-compose from distro repos"
+          apt:
+            name:
+              - docker.io
+              - docker-compose
+              - git
+              - rsync
+            state: present
+            update_cache: no
+          failed_when: false
+          when: ansible_os_family == "Debian"
+
+        - name: Re-detect Docker after distro packages (Debian)
+          shell: |
+            docker info >/dev/null 2>&1 || exit 1
+            if docker compose version >/dev/null 2>&1; then echo "docker compose"; exit 0; fi
+            if COMPOSE_BIN="$(command -v docker-compose)" && "$COMPOSE_BIN" --version >/dev/null 2>&1; then echo "$COMPOSE_BIN"; exit 0; fi
+            exit 1
+          register: docker_redetect_debian
+          changed_when: false
+          failed_when: false
+          when: ansible_os_family == "Debian"
+
+        - name: Mark stack ready after distro docker.io install
+          set_fact:
+            docker_stack_ready: true
+            docker_compose_cmd: "{{ docker_redetect_debian.stdout | trim }}"
+          when:
+            - ansible_os_family == "Debian"
+            - docker_redetect_debian.rc | default(1) == 0
+
+        - name: "[Debian] Refresh apt cache (best effort, Docker.com fallback)"
           apt:
             update_cache: yes
             cache_valid_time: 3600
           failed_when: false
-          when: ansible_os_family == "Debian"
+          when:
+            - ansible_os_family == "Debian"
+            - not docker_stack_ready | bool
+            - ansible_distribution_major_version | int >= 11
 
-        - name: "[Debian] Install Docker prerequisites"
-          apt:
-            name:
-              - ca-certificates
-              - curl
-              - gnupg
-              - lsb-release
-            state: present
-            update_cache: no
-          failed_when: false
-          when: ansible_os_family == "Debian"
+        - name: "[Debian] Install from Docker.com (Debian 11+ only, best effort)"
+          block:
+            - name: "[Debian] Install Docker prerequisites"
+              apt:
+                name:
+                  - ca-certificates
+                  - curl
+                  - gnupg
+                  - lsb-release
+                state: present
+                update_cache: no
+              failed_when: false
 
-        - name: "[Debian] Add Docker GPG key"
-          shell: |
-            install -m 0755 -d /etc/apt/keyrings
-            curl -fsSL https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg \
-              | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-            chmod a+r /etc/apt/keyrings/docker.gpg
-          args:
-            creates: /etc/apt/keyrings/docker.gpg
-          when: ansible_os_family == "Debian"
+            - name: "[Debian] Add Docker GPG key"
+              shell: |
+                install -m 0755 -d /etc/apt/keyrings
+                curl -fsSL https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg \
+                  | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+                chmod a+r /etc/apt/keyrings/docker.gpg
+              args:
+                creates: /etc/apt/keyrings/docker.gpg
 
-        - name: "[Debian] Add Docker APT repository"
-          shell: |
-            echo \
-              "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-              https://download.docker.com/linux/{{ ansible_distribution | lower }} \
-              $(. /etc/os-release && echo "${VERSION_CODENAME:-$VERSION_ID}") stable" \
-              > /etc/apt/sources.list.d/docker.list
-          args:
-            creates: /etc/apt/sources.list.d/docker.list
-          when: ansible_os_family == "Debian"
+            - name: "[Debian] Add Docker APT repository"
+              shell: |
+                echo \
+                  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+                  https://download.docker.com/linux/{{ ansible_distribution | lower }} \
+                  $(. /etc/os-release && echo "${VERSION_CODENAME:-$VERSION_ID}") stable" \
+                  > /etc/apt/sources.list.d/docker.list
+              args:
+                creates: /etc/apt/sources.list.d/docker.list
 
-        - name: "[Debian] Install Docker Engine"
-          apt:
-            name:
-              - docker-ce
-              - docker-ce-cli
-              - containerd.io
-              - docker-buildx-plugin
-              - docker-compose-plugin
-            state: present
-            update_cache: no
-          when: ansible_os_family == "Debian"
+            - name: "[Debian] Install Docker Engine from Docker.com"
+              apt:
+                name:
+                  - docker-ce
+                  - docker-ce-cli
+                  - containerd.io
+                  - docker-buildx-plugin
+                  - docker-compose-plugin
+                state: present
+                update_cache: no
+              failed_when: false
+          when:
+            - ansible_os_family == "Debian"
+            - not docker_stack_ready | bool
+            - ansible_distribution_major_version | int >= 11
 
         - name: "[RedHat] Add Docker repository"
           shell: |
@@ -203,6 +264,7 @@
               - containerd.io
               - docker-compose-plugin
             state: present
+          failed_when: false
           when: ansible_os_family == "RedHat"
 
         - name: "[Arch] Install Docker"
@@ -217,19 +279,30 @@
             creates: /usr/bin/docker
           when: ansible_os_family == "Suse"
 
-    - name: Re-check docker compose after install attempt
-      shell: docker compose version
-      register: docker_compose_recheck
+    - name: Final Docker stack detection
+      shell: |
+        docker info >/dev/null 2>&1 || exit 1
+        if docker compose version >/dev/null 2>&1; then echo "docker compose"; exit 0; fi
+        if COMPOSE_BIN="$(command -v docker-compose)" && "$COMPOSE_BIN" --version >/dev/null 2>&1; then echo "$COMPOSE_BIN"; exit 0; fi
+        exit 1
+      register: docker_detect_final
       changed_when: false
       failed_when: false
 
+    - name: Apply final docker compose command
+      set_fact:
+        docker_stack_ready: "{{ docker_detect_final.rc == 0 }}"
+        docker_compose_cmd: "{{ docker_detect_final.stdout | trim }}"
+      when: docker_detect_final.rc == 0
+
     - name: Fail if docker compose still unavailable
-      assert:
-        that:
-          - docker_stack_ready or docker_compose_recheck.rc == 0
-        fail_msg: >
-          Docker Compose introuvable apres tentative d installation.
-          Installez docker-ce et docker-compose-plugin manuellement, puis relancez.
+      fail:
+        msg: >
+          Docker Compose introuvable sur {{ ansible_distribution }} {{ ansible_distribution_version }}.
+          Verifiez : docker --version && docker info && docker-compose --version
+          Debian 10 : paquets « docker.io » + « docker-compose » (pas docker-ce des depots Docker.com).
+          Detail detection : {{ docker_detect.stdout | default(docker_detect_final.stderr | default('n/a')) }}
+      when: not docker_stack_ready | bool
 
     - name: Enable and start Docker
       systemd:
@@ -429,14 +502,12 @@
           T4C_VERIFY_WDA_MD5={{ '1' if (t4c_verify_wda_md5 | bool) else '0' }}
 
     - name: Build and start stack via docker/Dockerfile (safe to re-run after Ctrl+C)
-      shell: docker compose up -d --build --remove-orphans
+      shell: "{{ docker_compose_cmd }} up -d --build --remove-orphans"
       args:
         chdir: "{{ deploy_dir }}"
 
     - name: Wait for t4cserver container (boot WDA may take minutes)
-      shell: docker compose ps --status running --services | grep -qx t4cserver
-      args:
-        chdir: "{{ deploy_dir }}"
+      shell: docker ps --filter "name=t4cserver" --filter "status=running" -q | grep -q .
       register: t4c_up
       retries: 30
       delay: 10
@@ -457,8 +528,8 @@
           Type=oneshot
           RemainAfterExit=yes
           WorkingDirectory={{ deploy_dir }}
-          ExecStart=/usr/bin/docker compose up -d
-          ExecStop=/usr/bin/docker compose down
+          ExecStart=/bin/bash -lc 'cd {{ deploy_dir }} && {{ docker_compose_cmd }} up -d'
+          ExecStop=/bin/bash -lc 'cd {{ deploy_dir }} && {{ docker_compose_cmd }} down'
           TimeoutStartSec=600
 
           [Install]
@@ -487,5 +558,6 @@
           - "Dockerfile  : {{ deploy_dir }}/docker/Dockerfile"
           - "Assets      : {{ docker_runtime_dir }}/"
           - "Port UDP    : {{ t4c_udp_port }}"
-          - "Logs        : docker compose -f {{ deploy_dir }}/docker-compose.yml logs -f t4cserver"
+          - "Compose cmd : {{ docker_compose_cmd }}"
+          - "Logs        : cd {{ deploy_dir }} && {{ docker_compose_cmd }} logs -f t4cserver"
           - "Relance safe : ce playbook est idempotent — Ctrl+C / refresh UI OK, relancer."
