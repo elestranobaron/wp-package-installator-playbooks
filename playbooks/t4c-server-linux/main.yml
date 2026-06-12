@@ -1,10 +1,11 @@
 ---
-# T4C Server Linux — déploiement Docker cross-distro
-# Utilise docker/Dockerfile + docker-compose.yml du repo t4c-server-linux
-# Assets MEGA → {{ deploy_dir }}/docker/runtime/ (volume T4C_RUNTIME_ASSETS)
+# T4C Server Linux — WP DevOps Dashboard / Package Installator
+# Ansible tourne EN LOCAL sur le serveur deja connecte en SSH (connection: local).
+# Pas de handlers, pas de FQCN ansible.builtin.* (Ansible minimal sur cible).
 - name: Deploy T4C Server Linux (Docker)
-  hosts: all
-  become: true
+  hosts: localhost
+  connection: local
+  gather_facts: yes
 
   vars:
     deploy_dir: /opt/t4c-server
@@ -22,31 +23,25 @@
     t4c_staging_assets: /tmp/t4c-server-assets
     docker_runtime_dir: "{{ deploy_dir }}/docker/runtime"
     github_api: "https://api.github.com/repos/{{ github_repo }}"
+    resolved_release_tag: main
 
-  pre_tasks:
-    - name: Gather OS facts
-      ansible.builtin.setup:
-        gather_subset: ["distribution", "architecture"]
-
+  tasks:
     - name: Assert supported OS family
-      ansible.builtin.assert:
+      assert:
         that:
           - ansible_os_family in ["Debian", "RedHat", "Archlinux", "Suse"]
-        fail_msg: >
-          OS non supporté : {{ ansible_os_family }}.
-          Distributions supportées : Debian/Ubuntu, Fedora/RHEL, Arch, openSUSE.
+        fail_msg: "OS non supporte. Distros : Debian/Ubuntu, Fedora/RHEL, Arch, openSUSE."
 
     - name: Assert DB passwords are set
-      ansible.builtin.assert:
+      assert:
         that:
           - db_password | length > 0
           - db_root_password | length > 0
-        fail_msg: "Définir db_password et db_root_password dans Package Installator."
+        fail_msg: "Definir db_password et db_root_password dans le dashboard."
 
-  tasks:
-    # ── Docker (Debian / Ubuntu / Raspbian) ───────────────────────────────
+    # ── Docker (Debian / Ubuntu) ────────────────────────────────────────
     - name: "[Debian] Install Docker prerequisites"
-      ansible.builtin.apt:
+      apt:
         name:
           - ca-certificates
           - curl
@@ -55,11 +50,11 @@
           - git
           - rsync
         state: present
-        update_cache: true
+        update_cache: yes
       when: ansible_os_family == "Debian"
 
     - name: "[Debian] Add Docker GPG key"
-      ansible.builtin.shell: |
+      shell: |
         install -m 0755 -d /etc/apt/keyrings
         curl -fsSL https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg \
           | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
@@ -69,7 +64,7 @@
       when: ansible_os_family == "Debian"
 
     - name: "[Debian] Add Docker APT repository"
-      ansible.builtin.shell: |
+      shell: |
         echo \
           "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
           https://download.docker.com/linux/{{ ansible_distribution | lower }} \
@@ -80,7 +75,7 @@
       when: ansible_os_family == "Debian"
 
     - name: "[Debian] Install Docker Engine"
-      ansible.builtin.apt:
+      apt:
         name:
           - docker-ce
           - docker-ce-cli
@@ -88,12 +83,12 @@
           - docker-buildx-plugin
           - docker-compose-plugin
         state: present
-        update_cache: true
+        update_cache: yes
       when: ansible_os_family == "Debian"
 
     # ── Docker (Fedora / RHEL) ────────────────────────────────────────────
     - name: "[RedHat] Add Docker repository"
-      ansible.builtin.shell: |
+      shell: |
         dnf config-manager --add-repo \
           https://download.docker.com/linux/fedora/docker-ce.repo
       args:
@@ -101,7 +96,7 @@
       when: ansible_os_family == "RedHat"
 
     - name: "[RedHat] Install Docker Engine"
-      ansible.builtin.dnf:
+      dnf:
         name:
           - docker-ce
           - docker-ce-cli
@@ -114,87 +109,81 @@
 
     # ── Docker (Arch) ─────────────────────────────────────────────────────
     - name: "[Arch] Install Docker"
-      community.general.pacman:
-        name:
-          - docker
-          - docker-compose
-          - git
-          - rsync
-        state: present
+      shell: pacman -Sy --noconfirm docker docker-compose git rsync
+      args:
+        creates: /usr/bin/docker
       when: ansible_os_family == "Archlinux"
 
     # ── Docker (openSUSE) ─────────────────────────────────────────────────
     - name: "[Suse] Install Docker"
-      community.general.zypper:
-        name:
-          - docker
-          - docker-compose
-          - git
-          - rsync
-        state: present
+      shell: zypper -n install docker docker-compose git rsync
+      args:
+        creates: /usr/bin/docker
       when: ansible_os_family == "Suse"
 
     - name: Enable and start Docker
-      ansible.builtin.systemd:
+      systemd:
         name: docker
-        enabled: true
+        enabled: yes
         state: started
 
-    # ── Release GitHub ──────────────────────────────────────────────────
-    - name: Resolve release tag from GitHub API
+    # ── Release GitHub ────────────────────────────────────────────────────
+    - name: Query latest GitHub release
+      uri:
+        url: "{{ github_api }}/releases/latest"
+        return_content: yes
+      register: gh_release
+      failed_when: false
       when: release_tag | length == 0
-      block:
-        - name: Query latest GitHub release
-          ansible.builtin.uri:
-            url: "{{ github_api }}/releases/latest"
-            return_content: true
-          register: gh_release
-          failed_when: false
 
-        - name: Fallback to tags list if no GitHub Release
-          when: gh_release.status | default(0) != 200
-          ansible.builtin.uri:
-            url: "{{ github_api }}/tags"
-            return_content: true
-          register: gh_tags
+    - name: Fallback to GitHub tags list
+      uri:
+        url: "{{ github_api }}/tags"
+        return_content: yes
+      register: gh_tags
+      when:
+        - release_tag | length == 0
+        - gh_release.status | default(0) != 200
 
-        - name: Set resolved release tag
-          ansible.builtin.set_fact:
-            resolved_release_tag: >-
-              {{
-                gh_release.json.tag_name
-                if (gh_release.status | default(0)) == 200
-                else (gh_tags.json[0].name if (gh_tags.json | default([]) | length > 0) else 'main')
-              }}
-
-    - name: Use explicit release tag
-      when: release_tag | length > 0
-      ansible.builtin.set_fact:
-        resolved_release_tag: "{{ release_tag }}"
+    - name: Set resolved release tag from GitHub
+      set_fact:
+        resolved_release_tag: >-
+          {{
+            release_tag
+            if release_tag | length > 0
+            else (
+              gh_release.json.tag_name
+              if (gh_release.status | default(0)) == 200
+              else (
+                gh_tags.json[0].name
+                if (gh_tags.json | default([]) | length > 0)
+                else 'v0.1.0-alpha'
+              )
+            )
+          }}
 
     - name: Clone t4c-server-linux at release tag
-      ansible.builtin.git:
+      git:
         repo: "https://github.com/{{ github_repo }}.git"
         dest: "{{ deploy_dir }}"
         version: "{{ resolved_release_tag }}"
-        force: true
+        force: yes
         depth: 1
 
     - name: Ensure docker/runtime directory exists
-      ansible.builtin.file:
+      file:
         path: "{{ docker_runtime_dir }}"
         state: directory
         mode: "0755"
 
     # ── Assets Vircom (MEGA) ──────────────────────────────────────────────
     - name: Check local MEGA-synced assets
-      ansible.builtin.stat:
+      stat:
         path: "{{ t4c_assets_dir }}/WDA/T4C Worlds.WDA"
       register: local_assets
 
-    - name: Sync local MEGA assets → docker/runtime
-      when: local_assets.stat.exists
-      ansible.builtin.shell: |
+    - name: Sync local MEGA assets into docker/runtime
+      shell: |
         rsync -a \
           --exclude='logs/' \
           --exclude='SQL/' \
@@ -202,82 +191,94 @@
           "{{ docker_runtime_dir }}/"
       args:
         executable: /bin/bash
+      when: local_assets.stat.exists
 
-    - name: Download MEGA assets (Debian — MEGAcmd)
+    - name: Install MEGAcmd on Debian
+      apt:
+        deb: "https://mega.nz/linux/repo/Debian_12/amd64/megacmd_2.1.1-1.1_amd64.deb"
+      failed_when: false
       when:
         - not local_assets.stat.exists
         - ansible_os_family == "Debian"
-      block:
-        - name: Install MEGAcmd (.deb)
-          ansible.builtin.apt:
-            deb: "https://mega.nz/linux/repo/Debian_12/{{ ansible_architecture | replace('x86_64', 'amd64') | replace('aarch64', 'arm64') }}/megacmd_2.1.1-1.1_{{ ansible_architecture | replace('x86_64', 'amd64') | replace('aarch64', 'arm64') }}.deb"
-          failed_when: false
 
-        - name: mega-get serveur/runtime from MEGA
-          ansible.builtin.shell: |
-            rm -rf "{{ t4c_staging_assets }}"
-            mkdir -p "{{ t4c_staging_assets }}"
-            mega-get "{{ mega_server_url }}" "{{ t4c_staging_assets }}"
-          args:
-            executable: /bin/bash
+    - name: Download assets from MEGA public folder
+      shell: |
+        rm -rf "{{ t4c_staging_assets }}"
+        mkdir -p "{{ t4c_staging_assets }}"
+        mega-get "{{ mega_server_url }}" "{{ t4c_staging_assets }}"
+      args:
+        executable: /bin/bash
+      when:
+        - not local_assets.stat.exists
+        - ansible_os_family == "Debian"
+      register: mega_dl
+      failed_when: false
 
-    - name: Download MEGA assets (Arch — megatools)
+    - name: Install megatools on Arch
+      shell: pacman -Sy --noconfirm megatools
       when:
         - not local_assets.stat.exists
         - ansible_os_family == "Archlinux"
-      block:
-        - name: Install megatools
-          community.general.pacman:
-            name: megatools
-            state: present
+      failed_when: false
 
-        - name: megadl serveur/runtime from MEGA
-          ansible.builtin.shell: |
-            rm -rf "{{ t4c_staging_assets }}"
-            mkdir -p "{{ t4c_staging_assets }}"
-            megadl --path="{{ t4c_staging_assets }}" "{{ mega_server_url }}"
-          args:
-            executable: /bin/bash
+    - name: Download assets from MEGA via megatools
+      shell: |
+        rm -rf "{{ t4c_staging_assets }}"
+        mkdir -p "{{ t4c_staging_assets }}"
+        megadl --path="{{ t4c_staging_assets }}" "{{ mega_server_url }}"
+      args:
+        executable: /bin/bash
+      when:
+        - not local_assets.stat.exists
+        - ansible_os_family == "Archlinux"
+      register: mega_dl_arch
+      failed_when: false
 
-    - name: Locate and sync downloaded MEGA runtime
+    - name: Find WDA after MEGA download
+      shell: find "{{ t4c_staging_assets }}" -name 'T4C Worlds.WDA' | head -1
+      register: wda_path
+      changed_when: false
+      failed_when: false
       when: not local_assets.stat.exists
-      block:
-        - name: Find WDA in MEGA staging
-          ansible.builtin.find:
-            paths: "{{ t4c_staging_assets }}"
-            patterns: "T4C Worlds.WDA"
-            recurse: true
-          register: wda_found
 
-        - name: Fail if assets missing
-          ansible.builtin.assert:
-            that:
-              - local_assets.stat.exists or (wda_found.matched | default(0) > 0)
-            fail_msg: >
-              Assets Vircom introuvables. Configurez t4c_assets_dir
-              (sync MEGA Desktop → serveur/runtime/) ou vérifiez mega_server_url.
+    - name: Sync MEGA download into docker/runtime
+      shell: |
+        WDA="{{ wda_path.stdout | trim }}"
+        MEGA_RUNTIME="$(dirname "$(dirname "$WDA")")"
+        rsync -a --exclude='logs/' --exclude='SQL/' "${MEGA_RUNTIME}/" "{{ docker_runtime_dir }}/"
+      args:
+        executable: /bin/bash
+      when:
+        - not local_assets.stat.exists
+        - wda_path.stdout | trim | length > 0
 
-        - name: Sync MEGA download → docker/runtime
-          when: wda_found.matched | default(0) > 0
-          ansible.builtin.shell: |
-            MEGA_RUNTIME="$(dirname "$(dirname "$(find "{{ t4c_staging_assets }}" -name 'T4C Worlds.WDA' | head -1)")")"
-            rsync -a --exclude='logs/' --exclude='SQL/' "${MEGA_RUNTIME}/" "{{ docker_runtime_dir }}/"
-          args:
-            executable: /bin/bash
+    - name: Assert Vircom assets are present
+      stat:
+        path: "{{ docker_runtime_dir }}/WDA/T4C Worlds.WDA"
+      register: wda_final
 
-    - name: Patch T4CServer.ini credentials in docker/runtime
-      ansible.builtin.lineinfile:
+    - name: Fail if Vircom assets missing
+      assert:
+        that:
+          - wda_final.stat.exists
+        fail_msg: >
+          Assets Vircom introuvables dans {{ docker_runtime_dir }}.
+          Sync MEGA vers t4c_assets_dir={{ t4c_assets_dir }}
+          ou verifiez mega_server_url.
+
+    - name: Patch T4CServer.ini DB credentials
+      lineinfile:
         path: "{{ docker_runtime_dir }}/T4CServer.ini"
         regexp: "{{ item.regexp }}"
         line: "{{ item.line }}"
-        create: false
+        create: no
       loop:
         - { regexp: '^DB_USER=', line: "DB_USER={{ db_user }}" }
         - { regexp: '^DB_PWD=', line: "DB_PWD={{ db_password }}" }
       failed_when: false
 
     - name: Ensure docker scripts are executable
-      ansible.builtin.file:
+      file:
         path: "{{ deploy_dir }}/docker/{{ item }}"
         mode: "0755"
       loop:
@@ -285,7 +286,7 @@
         - sync-runtime-from-build.sh
 
     - name: Write docker compose .env
-      ansible.builtin.copy:
+      copy:
         dest: "{{ deploy_dir }}/.env"
         mode: "0600"
         content: |
@@ -295,72 +296,60 @@
           T4C_DB_PASSWORD={{ db_password }}
           T4C_UDP_PORT={{ t4c_udp_port }}
           T4C_RUNTIME_ASSETS={{ docker_runtime_dir }}
-          T4C_VERIFY_WDA_MD5={{ 1 if t4c_verify_wda_md5 | bool else 0 }}
+          T4C_VERIFY_WDA_MD5={{ '1' if (t4c_verify_wda_md5 | bool) else '0' }}
 
-    - name: Build and start stack (docker/Dockerfile + MariaDB)
-      ansible.builtin.shell: docker compose up -d --build --remove-orphans
+    - name: Build and start stack via docker/Dockerfile
+      shell: docker compose up -d --build --remove-orphans
       args:
         chdir: "{{ deploy_dir }}"
-      register: compose_up
-      changed_when: true
 
-    - name: Wait for UDP game port
-      ansible.builtin.wait_for:
-        host: 127.0.0.1
-        port: "{{ t4c_udp_port }}"
-        timeout: 120
-        state: started
-      failed_when: false
+    - name: Wait for t4cserver container
+      shell: docker compose ps --status running --services | grep -qx t4cserver
+      args:
+        chdir: "{{ deploy_dir }}"
+      register: t4c_up
+      retries: 30
+      delay: 10
+      until: t4c_up.rc == 0
 
-    - name: Deploy systemd unit for docker compose stack
+    - name: Install systemd unit for docker compose stack
+      copy:
+        dest: /etc/systemd/system/t4c-server-docker.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=T4C Server Linux (Docker Compose)
+          Requires=docker.service
+          After=docker.service network-online.target
+
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          WorkingDirectory={{ deploy_dir }}
+          ExecStart=/usr/bin/docker compose up -d
+          ExecStop=/usr/bin/docker compose down
+          TimeoutStartSec=600
+
+          [Install]
+          WantedBy=multi-user.target
       when: enable_systemd | bool
-      block:
-        - name: Install t4c-server-docker.service
-          ansible.builtin.copy:
-            dest: /etc/systemd/system/t4c-server-docker.service
-            mode: "0644"
-            content: |
-              [Unit]
-              Description=T4C Server Linux (Docker Compose)
-              Requires=docker.service
-              After=docker.service network-online.target
 
-              [Service]
-              Type=oneshot
-              RemainAfterExit=yes
-              WorkingDirectory={{ deploy_dir }}
-              ExecStart=/usr/bin/docker compose up -d
-              ExecStop=/usr/bin/docker compose down
-              TimeoutStartSec=600
-
-              [Install]
-              WantedBy=multi-user.target
-          notify: Reload systemd
-
-        - name: Enable t4c-server-docker service
-          ansible.builtin.systemd:
-            name: t4c-server-docker
-            enabled: true
-            daemon_reload: true
+    - name: Enable t4c-server-docker systemd service
+      systemd:
+        name: t4c-server-docker
+        enabled: yes
+        daemon_reload: yes
+        state: started
+      when: enable_systemd | bool
 
     - name: Print deployment summary
-      ansible.builtin.debug:
-        msg: |
-          T4C Server Linux déployé (Docker)
-          ─────────────────────────────────────────
-          Release     : {{ resolved_release_tag }}
-          Repo        : {{ deploy_dir }}
-          Dockerfile  : {{ deploy_dir }}/docker/Dockerfile  (utilisé par compose)
-          Assets      : {{ docker_runtime_dir }}/  ← MEGA serveur/runtime
-          Compose     : {{ deploy_dir }}/docker-compose.yml
-          Port UDP    : {{ t4c_udp_port }}
-          MariaDB     : conteneur « mariadb » (réseau interne compose)
-          Compte test : test / test
-          ─────────────────────────────────────────
-          Logs serveur : docker compose -f {{ deploy_dir }}/docker-compose.yml logs -f t4cserver
-          Attendre     : [BOOT] SERVER_READY (1–3 min boot WDA)
-
-  handlers:
-    - name: Reload systemd
-      ansible.builtin.systemd:
-        daemon_reload: true
+      debug:
+        msg:
+          - "T4C Server Linux deploye (Docker)"
+          - "Release     : {{ resolved_release_tag }}"
+          - "Code        : {{ deploy_dir }}"
+          - "Dockerfile  : {{ deploy_dir }}/docker/Dockerfile"
+          - "Assets      : {{ docker_runtime_dir }}/"
+          - "Port UDP    : {{ t4c_udp_port }}"
+          - "Logs        : docker compose -f {{ deploy_dir }}/docker-compose.yml logs -f t4cserver"
+          - "Attendre    : [BOOT] SERVER_READY (1-3 min)"
