@@ -16,6 +16,8 @@
     t4c_udp_port: 11677
     db_name: t4c_server
     db_user: t4cuser
+    db_password_default: "T4Cpass2026!"
+    db_root_password_default: "t4c_root_dev"
     db_password: ""
     db_root_password: ""
     t4c_verify_wda_md5: true
@@ -32,12 +34,60 @@
           - ansible_os_family in ["Debian", "RedHat", "Archlinux", "Suse"]
         fail_msg: "OS non supporte. Distros : Debian/Ubuntu, Fedora/RHEL, Arch, openSUSE."
 
-    - name: Assert DB passwords are set
-      assert:
-        that:
-          - db_password | length > 0
-          - db_root_password | length > 0
-        fail_msg: "Definir db_password et db_root_password dans le dashboard."
+    # Credentials: dashboard (extra-vars) > .env existant > defaults docker-compose
+    - name: Check for existing deployment .env
+      stat:
+        path: "{{ deploy_dir }}/.env"
+      register: env_file
+
+    - name: Read T4C_DB_PASSWORD from existing .env
+      shell: grep -m1 '^T4C_DB_PASSWORD=' "{{ deploy_dir }}/.env" | cut -d= -f2-
+      register: env_db_password
+      changed_when: false
+      failed_when: false
+      when:
+        - env_file.stat.exists
+        - db_password | default('') | length == 0
+
+    - name: Read MARIADB_ROOT_PASSWORD from existing .env
+      shell: grep -m1 '^MARIADB_ROOT_PASSWORD=' "{{ deploy_dir }}/.env" | cut -d= -f2-
+      register: env_db_root_password
+      changed_when: false
+      failed_when: false
+      when:
+        - env_file.stat.exists
+        - db_root_password | default('') | length == 0
+
+    - name: Resolve DB credentials for idempotent re-runs
+      set_fact:
+        db_password: >-
+          {{
+            db_password
+            if (db_password | default('') | length > 0)
+            else (
+              env_db_password.stdout | trim
+              if (env_db_password.stdout | default('') | trim | length > 0)
+              else db_password_default
+            )
+          }}
+        db_root_password: >-
+          {{
+            db_root_password
+            if (db_root_password | default('') | length > 0)
+            else (
+              env_db_root_password.stdout | trim
+              if (env_db_root_password.stdout | default('') | trim | length > 0)
+              else db_root_password_default
+            )
+          }}
+
+    - name: Note credential source on re-run
+      debug:
+        msg: >-
+          Credentials DB resolues
+          (dashboard={{ (db_password | default('') | length > 0) and (db_root_password | default('') | length > 0) }},
+          .env={{ env_file.stat.exists }},
+          defaults docker-compose={{ db_password == db_password_default }})
 
     # ── Docker (Debian / Ubuntu) ────────────────────────────────────────
     - name: "[Debian] Install Docker prerequisites"
@@ -177,6 +227,11 @@
         mode: "0755"
 
     # ── Assets Vircom (MEGA) ──────────────────────────────────────────────
+    - name: Check if Vircom assets already deployed
+      stat:
+        path: "{{ docker_runtime_dir }}/WDA/T4C Worlds.WDA"
+      register: deployed_assets
+
     - name: Check local MEGA-synced assets
       stat:
         path: "{{ t4c_assets_dir }}/WDA/T4C Worlds.WDA"
@@ -198,6 +253,7 @@
         deb: "https://mega.nz/linux/repo/Debian_12/amd64/megacmd_2.1.1-1.1_amd64.deb"
       failed_when: false
       when:
+        - not deployed_assets.stat.exists
         - not local_assets.stat.exists
         - ansible_os_family == "Debian"
 
@@ -209,6 +265,7 @@
       args:
         executable: /bin/bash
       when:
+        - not deployed_assets.stat.exists
         - not local_assets.stat.exists
         - ansible_os_family == "Debian"
       register: mega_dl
@@ -217,6 +274,7 @@
     - name: Install megatools on Arch
       shell: pacman -Sy --noconfirm megatools
       when:
+        - not deployed_assets.stat.exists
         - not local_assets.stat.exists
         - ansible_os_family == "Archlinux"
       failed_when: false
@@ -229,6 +287,7 @@
       args:
         executable: /bin/bash
       when:
+        - not deployed_assets.stat.exists
         - not local_assets.stat.exists
         - ansible_os_family == "Archlinux"
       register: mega_dl_arch
@@ -239,7 +298,9 @@
       register: wda_path
       changed_when: false
       failed_when: false
-      when: not local_assets.stat.exists
+      when:
+        - not deployed_assets.stat.exists
+        - not local_assets.stat.exists
 
     - name: Sync MEGA download into docker/runtime
       shell: |
@@ -249,8 +310,9 @@
       args:
         executable: /bin/bash
       when:
+        - not deployed_assets.stat.exists
         - not local_assets.stat.exists
-        - wda_path.stdout | trim | length > 0
+        - wda_path.stdout | default('') | trim | length > 0
 
     - name: Assert Vircom assets are present
       stat:
