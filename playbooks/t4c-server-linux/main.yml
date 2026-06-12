@@ -415,23 +415,32 @@
     - name: Download Vircom assets from MEGA when still missing
       when: wda_ready.rc != 0
       block:
-        - name: Install megatools (Debian/Arch — MEGAcmd Debian 12 deb incompatible Buster)
+        - name: Install megatools on Debian
           apt:
             name: megatools
             state: present
-          failed_when: false
+            update_cache: no
           when: ansible_os_family == "Debian"
 
         - name: Install megatools on Arch
           shell: pacman -Sy --noconfirm megatools
-          failed_when: false
           when: ansible_os_family == "Archlinux"
 
-        - name: Download MEGA folder with megadl
+        - name: Require megadl binary
+          shell: command -v megadl && megadl --version
+          register: megadl_bin
+          changed_when: false
+          failed_when: megadl_bin.rc != 0
+
+        - name: Download MEGA folder (mega_server_url) with log
           shell: |
+            set -euo pipefail
             rm -rf "{{ t4c_staging_assets }}"
             mkdir -p "{{ t4c_staging_assets }}"
-            megadl --path="{{ t4c_staging_assets }}" "{{ mega_server_url }}"
+            LOG=/tmp/t4c-megadl.log
+            : > "$LOG"
+            megadl --path="{{ t4c_staging_assets }}" "{{ mega_server_url }}" >>"$LOG" 2>&1
+            find "{{ t4c_staging_assets }}" -maxdepth 5 -type d | head -20 >>"$LOG"
           args:
             executable: /bin/bash
           register: mega_dl
@@ -446,19 +455,23 @@
         - name: Fail with diagnostics when MEGA provision failed
           fail:
             msg: |
-              Impossible de provisionner les assets Vircom dans {{ docker_runtime_dir }}.
+              megadl a echoue ou WDA absent apres telechargement MEGA.
 
-              Local {{ t4c_assets_dir }} : {{ 'trouve' if local_wda.stat.exists else 'ABSENT sur ce serveur' }}
-              megadl rc={{ mega_dl.rc | default('?') }} stderr={{ mega_dl.stderr | default('') | trim }}
-              WDA dans staging : {{ wda_staging_path.stdout | default('') | trim | default('non trouve', true) }}
+              URL utilisee : {{ mega_server_url }}
+              megadl rc={{ mega_dl.rc | default('?') }}
+              Log complet  : /tmp/t4c-megadl.log
+              stderr       : {{ mega_dl.stderr | default('') | trim }}
 
-              Actions :
-                1) Copie manuelle :
-                   rsync -a {{ t4c_assets_dir }}/ {{ docker_runtime_dir }}/
-                2) Ou sync MEGA Desktop vers {{ t4c_assets_dir }} sur CE serveur
-                3) Ou verifier mega_server_url dans le dashboard
+              Test manuel sur le serveur :
+                apt-get install -y megatools
+                megadl --path=/tmp/test-mega '{{ mega_server_url }}'
+                find /tmp/test-mega -name 'T4C Worlds.WDA'
           when:
             - mega_dl.rc | default(1) != 0 or wda_staging_path.stdout | trim | length == 0
+
+        - name: MEGA download OK
+          debug:
+            msg: "MEGA OK — WDA={{ wda_staging_path.stdout | trim }} — log /tmp/t4c-megadl.log"
 
         - name: Sync MEGA staging into docker/runtime
           shell: |
