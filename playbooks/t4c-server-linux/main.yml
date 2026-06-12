@@ -381,9 +381,13 @@
       shell: |
         WDA="{{ docker_runtime_dir }}/WDA/T4C Worlds.WDA"
         test -f "$WDA" && test "$(stat -c%s "$WDA")" -ge {{ wda_min_bytes }}
-      register: wda_ready
+      register: wda_check
       changed_when: false
       failed_when: false
+
+    - name: Set WDA missing flag
+      set_fact:
+        wda_missing: "{{ wda_check.rc != 0 }}"
 
     - name: Check local asset source path
       stat:
@@ -400,20 +404,25 @@
       args:
         executable: /bin/bash
       when:
-        - wda_ready.rc != 0
+        - wda_missing | bool
         - local_wda.stat.exists
 
     - name: Re-verify WDA after local sync
       shell: |
         WDA="{{ docker_runtime_dir }}/WDA/T4C Worlds.WDA"
         test -f "$WDA" && test "$(stat -c%s "$WDA")" -ge {{ wda_min_bytes }}
-      register: wda_ready
+      register: wda_check_local
       changed_when: false
       failed_when: false
       when: local_wda.stat.exists
 
+    - name: Update WDA missing flag after local sync
+      set_fact:
+        wda_missing: "{{ wda_check_local.rc != 0 }}"
+      when: local_wda.stat.exists
+
     - name: Download Vircom assets from MEGA when still missing
-      when: wda_ready.rc != 0
+      when: wda_missing | bool
       block:
         - name: Install megatools on Debian
           apt:
@@ -486,9 +495,13 @@
           shell: |
             WDA="{{ docker_runtime_dir }}/WDA/T4C Worlds.WDA"
             test -f "$WDA" && test "$(stat -c%s "$WDA")" -ge {{ wda_min_bytes }}
-          register: wda_ready
+          register: wda_check_mega
           changed_when: false
           failed_when: false
+
+        - name: Update WDA missing flag after MEGA sync
+          set_fact:
+            wda_missing: "{{ wda_check_mega.rc != 0 }}"
 
     - name: Fail if Vircom assets still invalid
       fail:
@@ -496,9 +509,8 @@
           WDA invalide ou absent : {{ docker_runtime_dir }}/WDA/T4C Worlds.WDA
           (taille minimale {{ wda_min_bytes }} octets)
 
-          Copie manuelle depuis votre sync MEGA :
-            rsync -a {{ t4c_assets_dir }}/ {{ docker_runtime_dir }}/
-      when: wda_ready.rc != 0
+          Voir log MEGA : /tmp/t4c-megadl.log
+      when: wda_missing | bool
 
     - name: Patch T4CServer.ini DB credentials
       lineinfile:
