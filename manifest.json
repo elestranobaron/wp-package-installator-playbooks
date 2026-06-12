@@ -32,63 +32,135 @@
       ]
     },
     {
-      "id": "redis",
-      "name": "Redis Standalone",
-      "category": "Database",
-      "description": "Instance Redis simple pour le cache ou les files d'attente.",
-      "playbook": "playbooks/redis/main.yml",
+      "name": "WordPress (Natif Multi-Distro)",
+      "description": "Installation complète de WordPress avec Apache (backend), Nginx (proxy inverse), MariaDB, Fail2Ban et Certbot SSL automatique.",
       "options": [
         {
-          "key": "redis_port",
-          "label": "Port",
-          "type": "number",
-          "default": 6379
-        }
-      ]
-    },
-    {
-      "id": "dummy-check",
-      "name": "Dummy Healthcheck",
-      "version": "1.0.0",
-      "author": "Automation",
-      "category": "Maintenance",
-      "description": "Playbook de test ultra-léger pour vérifier la liaison Ansible.",
-      "playbook": "playbooks/dummy-test/main.yml",
-      "options": []
-    },
-    {
-      "id": "redis-cluster",
-      "name": "Redis Cluster",
-      "category": "Database",
-      "description": "Cluster Redis haute disponibilité (3 maîtres, 3 esclaves).",
-      "playbook": "playbooks/redis-cluster/main.yml",
-      "options": [
-        {
-          "key": "start_port",
-          "label": "Port de départ",
-          "type": "number",
-          "default": 7000
-        }
-      ]
-    },
-    {
-      "id": "mariadb",
-      "name": "MariaDB Server",
-      "category": "Database",
-      "description": "Base de données SQL relationnelle.",
-      "playbook": "playbooks/mariadb/main.yml",
-      "options": [
-        {
-          "key": "db_root_password",
-          "label": "Mot de passe Root",
-          "type": "password",
-          "default": "secret"
+          "name": "wp_db_name",
+          "type": "text",
+          "default": "wordpress",
+          "label": "Nom de la base de données MySQL"
         },
         {
-          "key": "db_port",
-          "label": "Port",
+          "name": "wp_db_user",
+          "type": "text",
+          "default": "wordpress",
+          "label": "Utilisateur MySQL"
+        },
+        {
+          "name": "wp_db_password",
+          "type": "password",
+          "label": "Mot de passe Root & User MySQL (Sera aussi utilisé pour sécuriser l'installation)"
+        },
+        {
+          "name": "apache_port",
           "type": "number",
-          "default": 3306
+          "default": 8080,
+          "label": "Port d'écoute interne Apache (HTTP)"
+        },
+        {
+          "name": "apache_ssl_port",
+          "type": "number",
+          "default": 8081,
+          "label": "Port d'écoute interne Apache (HTTPS)"
+        },
+        {
+          "name": "wordpress_install_dir",
+          "type": "text",
+          "default": "/var/www/html/wordpress",
+          "label": "Répertoire d'installation de WordPress (RedHat/Arch)"
+        }
+      ]
+    },
+    {
+      "id": "t4c-server-linux",
+      "name": "T4C Server Linux 1.72",
+      "category": "Games",
+      "description": "Clone la dernière release de t4c-server-linux, injecte les assets Vircom MEGA dans docker/runtime/, puis lance docker compose (Dockerfile du repo + MariaDB). Fonctionne sur toute distro Linux avec Docker.",
+      "playbook": "playbooks/t4c-server-linux/main.yml",
+      "icon": "🎮",
+      "author": "Thomas Lloancy",
+      "version": "1.1.0",
+      "requires": [
+        "docker",
+        "docker-compose-plugin"
+      ],
+      "options": [
+        {
+          "key": "deploy_dir",
+          "label": "Répertoire d'installation",
+          "type": "text",
+          "default": "/opt/t4c-server",
+          "required": true
+        },
+        {
+          "key": "github_repo",
+          "label": "Dépôt GitHub (owner/repo)",
+          "type": "text",
+          "default": "elestranobaron/t4c-server-linux"
+        },
+        {
+          "key": "release_tag",
+          "label": "Tag release (vide = dernière release GitHub)",
+          "type": "text",
+          "default": ""
+        },
+        {
+          "key": "t4c_assets_dir",
+          "label": "Chemin local vers serveur/runtime (sync MEGA Desktop)",
+          "type": "text",
+          "default": "/opt/t4c-assets/serveur/runtime",
+          "description": "Miroir de macgyver/serveur/runtime (WDA, elng, T4CServer.ini)."
+        },
+        {
+          "key": "mega_server_url",
+          "label": "Lien MEGA serveur (fallback si pas de sync locale)",
+          "type": "text",
+          "default": "https://mega.nz/folder/92YQmLIL#3I9KTlXVp7jmqwu2_2bX_Q"
+        },
+        {
+          "key": "t4c_udp_port",
+          "label": "Port UDP jeu (hôte → conteneur)",
+          "type": "number",
+          "default": 11677
+        },
+        {
+          "key": "db_name",
+          "label": "Base t4c_server",
+          "type": "text",
+          "default": "t4c_server"
+        },
+        {
+          "key": "db_user",
+          "label": "Utilisateur MariaDB T4C",
+          "type": "text",
+          "default": "t4cuser"
+        },
+        {
+          "key": "db_password",
+          "label": "Mot de passe MariaDB T4C",
+          "type": "password",
+          "default": "",
+          "required": true
+        },
+        {
+          "key": "db_root_password",
+          "label": "Mot de passe root MariaDB (conteneur)",
+          "type": "password",
+          "default": "",
+          "required": true
+        },
+        {
+          "key": "t4c_verify_wda_md5",
+          "label": "Vérifier MD5 des WDA LP64 au démarrage",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "key": "enable_systemd",
+          "label": "Service systemd docker compose au boot",
+          "type": "boolean",
+          "default": true
         }
       ]
     },
@@ -133,45 +205,50 @@
       ]
     },
     {
-      "name": "WordPress (Natif Multi-Distro)",
-      "description": "Installation complète de WordPress avec Apache (backend), Nginx (proxy inverse), MariaDB, Fail2Ban et Certbot SSL automatique.",
+      "id": "redis",
+      "name": "Redis Standalone",
+      "category": "Database",
+      "description": "Instance Redis simple pour le cache ou les files d'attente.",
+      "playbook": "playbooks/redis/main.yml",
       "options": [
         {
-          "name": "wp_db_name",
-          "type": "text",
-          "default": "wordpress",
-          "label": "Nom de la base de données MySQL"
-        },
-        {
-          "name": "wp_db_user",
-          "type": "text",
-          "default": "wordpress",
-          "label": "Utilisateur MySQL"
-        },
-        {
-          "name": "wp_db_password",
-          "type": "password",
-          "label": "Mot de passe Root & User MySQL (Sera aussi utilisé pour sécuriser l'installation)"
-        },
-        {
-          "name": "apache_port",
+          "key": "redis_port",
+          "label": "Port",
           "type": "number",
-          "default": 8080,
-          "label": "Port d'écoute interne Apache (HTTP)"
-        },
-        {
-          "name": "apache_ssl_port",
-          "type": "number",
-          "default": 8081,
-          "label": "Port d'écoute interne Apache (HTTPS)"
-        },
-        {
-          "name": "wordpress_install_dir",
-          "type": "text",
-          "default": "/var/www/html/wordpress",
-          "label": "Répertoire d'installation de WordPress (RedHat/Arch)"
+          "default": 6379
         }
       ]
+    },
+    {
+      "id": "mariadb",
+      "name": "MariaDB Server",
+      "category": "Database",
+      "description": "Base de données SQL relationnelle.",
+      "playbook": "playbooks/mariadb/main.yml",
+      "options": [
+        {
+          "key": "db_root_password",
+          "label": "Mot de passe Root",
+          "type": "password",
+          "default": "secret"
+        },
+        {
+          "key": "db_port",
+          "label": "Port",
+          "type": "number",
+          "default": 3306
+        }
+      ]
+    },
+    {
+      "id": "dummy-check",
+      "name": "Dummy Healthcheck",
+      "version": "1.0.0",
+      "author": "Automation",
+      "category": "Maintenance",
+      "description": "Playbook de test ultra-léger pour vérifier la liaison Ansible.",
+      "playbook": "playbooks/dummy-test/main.yml",
+      "options": []
     },
     {
       "id": "radio42-server",
@@ -250,6 +327,21 @@
           "label": "Dossier de déploiement",
           "type": "text",
           "default": "/opt/radio42"
+        }
+      ]
+    },
+    {
+      "id": "redis-cluster",
+      "name": "Redis Cluster",
+      "category": "Database",
+      "description": "Cluster Redis haute disponibilité (3 maîtres, 3 esclaves).",
+      "playbook": "playbooks/redis-cluster/main.yml",
+      "options": [
+        {
+          "key": "start_port",
+          "label": "Port de départ",
+          "type": "number",
+          "default": 7000
         }
       ]
     }
