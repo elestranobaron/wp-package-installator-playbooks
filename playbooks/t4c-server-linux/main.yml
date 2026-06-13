@@ -30,7 +30,7 @@
     compose_project_name: t4cstack
     t4c_container_mariadb: t4c-stack-mariadb
     t4c_container_server: t4c-stack-server
-    docker_legacy_base_image: "ubuntu:24.04"
+    docker_legacy_base_image: "ubuntu:22.04"
 
   tasks:
     - name: Refuse concurrent deploy if lock is recent
@@ -627,7 +627,7 @@
       when: docker_legacy_raw.stdout | default('0') | int == 0
 
     - name: Check legacy Ubuntu Dockerfile already applied
-      shell: grep -q 'T4C legacy Docker 18 — Ubuntu base' "{{ deploy_dir }}/docker/Dockerfile"
+      shell: grep -q 'SDL3 compile from source' "{{ deploy_dir }}/docker/Dockerfile"
       register: dockerfile_legacy_ok
       changed_when: false
       failed_when: false
@@ -637,14 +637,25 @@
       copy:
         dest: "{{ deploy_dir }}/docker/Dockerfile"
         content: |
-          # T4C legacy Docker 18 — Ubuntu base (Arch/pacman casse sur vieux Docker)
+          # T4C legacy Docker 18 — Ubuntu 22.04 (24.04 GPG casse sur Docker 18)
           FROM {{ docker_legacy_base_image }} AS builder
 
           ENV DEBIAN_FRONTEND=noninteractive
           RUN apt-get update && apt-get install -y --no-install-recommends \
-              build-essential cmake pkg-config ca-certificates \
-              libsdl3-dev libssl-dev unixodbc-dev libmariadb-dev \
+              build-essential cmake pkg-config git ca-certificates \
+              libasound2-dev libpulse-dev libx11-dev libxext-dev libxrandr-dev \
+              libxcursor-dev libxinerama-dev libxi-dev libxss-dev libxxf86vm-dev \
+              libdbus-1-dev libudev-dev libgles2-mesa-dev libegl1-mesa-dev \
+              libdrm-dev libgbm-dev libwayland-dev libdecor-0-dev \
+              libssl-dev unixodbc-dev libmariadb-dev \
             && rm -rf /var/lib/apt/lists/*
+
+          # SDL3 compile from source (absent des depots jammy)
+          RUN git clone --depth 1 --branch release-3.2.8 https://github.com/libsdl-org/SDL.git /tmp/SDL \
+            && cmake -S /tmp/SDL -B /tmp/SDL/build -DCMAKE_BUILD_TYPE=Release \
+            && cmake --build /tmp/SDL/build -j"$(nproc)" \
+            && cmake --install /tmp/SDL/build \
+            && rm -rf /tmp/SDL
 
           WORKDIR /src
           COPY . .
@@ -656,9 +667,12 @@
 
           ENV DEBIAN_FRONTEND=noninteractive
           RUN apt-get update && apt-get install -y --no-install-recommends \
-              libsdl3-0t64 libssl3t64 unixodbc mariadb-connector-odbc gettext-base \
-              ca-certificates \
+              libssl3 unixodbc mariadb-connector-odbc gettext-base ca-certificates \
+              libasound2 libpulse0 libx11-6 libgbm1 libwayland-client0 libdecor-0-0 libxkbcommon0 \
             && rm -rf /var/lib/apt/lists/*
+
+          COPY --from=builder /usr/local/lib/libSDL3.so* /usr/local/lib/
+          RUN echo /usr/local/lib > /etc/ld.so.conf.d/sdl3.conf && ldconfig
 
           WORKDIR /srv/t4c
 
