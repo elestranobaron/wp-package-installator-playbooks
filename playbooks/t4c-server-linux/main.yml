@@ -1079,13 +1079,57 @@
           {{ docker_up_log_tail.stdout | default('') }}
       when: compose_up.rc | default(1) != 0
 
-    - name: Wait for t4c-stack-server container (boot WDA may take minutes)
-      shell: "docker ps --filter name={{ t4c_container_server }} --filter status=running -q | grep -q ."
-      register: t4c_up
-      retries: 30
-      delay: 10
-      until: t4c_up.rc == 0
+    - name: Wait for t4c-stack-server stable (detect restart loop / ODBC boot fail)
+      shell: |
+        set +e
+        NAME="{{ t4c_container_server }}"
+        sleep 12
+        for i in 1 2 3 4 5 6; do
+          ST=$(docker inspect -f '{{ "{{" }}.State.Status{{ "}}" }}' "$NAME" 2>/dev/null)
+          RC=$(docker inspect -f '{{ "{{" }}.State.ExitCode{{ "}}" }}' "$NAME" 2>/dev/null)
+          RST=$(docker inspect -f '{{ "{{" }}.RestartCount{{ "}}" }}' "$NAME" 2>/dev/null)
+          echo "try=$i status=$ST exit=$RC restarts=$RST"
+          if [ "$ST" = "restarting" ]; then
+            docker logs "$NAME" 2>&1 | tail -30
+            exit 1
+          fi
+          if [ "$ST" = "exited" ]; then
+            docker logs "$NAME" 2>&1 | tail -30
+            exit 1
+          fi
+          if [ "$ST" = "running" ]; then
+            LOG=$(docker logs "$NAME" 2>&1 | tail -100)
+            echo "$LOG" | grep -q 'ODBC preflight OK' && exit 0
+            echo "$LOG" | grep -q 'FAIL: ODBC preflight' && exit 2
+            echo "$LOG" | grep -q '\[BOOT\] SERVER_READY' && exit 0
+            if [ "$i" -ge 6 ]; then
+              echo "$LOG" | tail -30
+              exit 3
+            fi
+          fi
+          sleep 10
+        done
+        exit 1
+      register: t4c_health
+      changed_when: false
       failed_when: false
+
+    - name: Fail if t4c-server restart loop or boot failure
+      fail:
+        msg: |
+          t4c-stack-server ne reste pas up apres deploy (rc sante={{ t4c_health.rc }}).
+
+          Verifier :
+            docker ps -a --filter name={{ t4c_container_server }}
+            docker logs {{ t4c_container_server }} --tail 80
+
+          rc=1 : restart loop (souvent exit 111 = ODBC)
+          rc=2 : ODBC preflight FAIL dans entrypoint
+          rc=3 : conteneur running mais pas SERVER_READY / preflight OK (boot WDA lent ou bloque)
+
+          Dernier diagnostic playbook :
+          {{ t4c_health.stdout | default('') }}
+      when: t4c_health.rc | default(1) != 0
 
     - name: Install systemd unit for docker compose stack
       copy:
