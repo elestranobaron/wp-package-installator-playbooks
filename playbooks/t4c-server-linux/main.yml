@@ -27,6 +27,9 @@
     github_api: "https://api.github.com/repos/{{ github_repo }}"
     resolved_release_tag: main
     wda_min_bytes: 1048576
+    compose_project_name: t4cstack
+    t4c_container_mariadb: t4c-stack-mariadb
+    t4c_container_server: t4c-stack-server
 
   tasks:
     - name: Refuse concurrent deploy if lock is recent
@@ -536,11 +539,38 @@
         - entrypoint.sh
         - sync-runtime-from-build.sh
 
+    - name: Check docker-compose fixed container names already applied
+      shell: grep -q 'container_name: {{ t4c_container_mariadb }}' "{{ deploy_dir }}/docker-compose.yml"
+      register: compose_names_patched
+      changed_when: false
+      failed_when: false
+
+    - name: Patch docker-compose.yml with fixed container names
+      replace:
+        path: "{{ deploy_dir }}/docker-compose.yml"
+        regexp: '(?m)^  mariadb:\n    image: mariadb:11'
+        replace: |
+          mariadb:
+            container_name: {{ t4c_container_mariadb }}
+            image: mariadb:11
+      when: compose_names_patched.rc != 0
+
+    - name: Patch docker-compose.yml t4cserver fixed container name
+      replace:
+        path: "{{ deploy_dir }}/docker-compose.yml"
+        regexp: '(?m)^  t4cserver:\n    build:'
+        replace: |
+          t4cserver:
+            container_name: {{ t4c_container_server }}
+            build:
+      when: compose_names_patched.rc != 0
+
     - name: Write docker compose .env
       copy:
         dest: "{{ deploy_dir }}/.env"
         mode: "0600"
         content: |
+          COMPOSE_PROJECT_NAME={{ compose_project_name }}
           MARIADB_ROOT_PASSWORD={{ db_root_password }}
           T4C_DB_NAME={{ db_name }}
           T4C_DB_USER={{ db_user }}
@@ -585,8 +615,19 @@
         replace_all: yes
       when: dockerfile_pacman_patched.rc != 0
 
+    - name: Purge orphan t4c containers from failed runs
+      shell: |
+        set +e
+        for id in $(docker ps -aq --filter "name=t4c-server_mariadb"); do docker rm -f "$id"; done
+        for id in $(docker ps -aq --filter "name=t4c-server_t4cserver"); do docker rm -f "$id"; done
+        docker container prune -f >/dev/null
+      args:
+        executable: /bin/bash
+      changed_when: false
+      failed_when: false
+
     - name: Pull MariaDB image first
-      shell: "{{ docker_compose_cmd }} pull mariadb"
+      shell: "{{ docker_compose_cmd }} -p {{ compose_project_name }} pull mariadb"
       args:
         chdir: "{{ deploy_dir }}"
       environment:
@@ -595,21 +636,25 @@
       register: compose_pull
       failed_when: false
 
-    - name: Build t4cserver image (log /tmp/t4c-docker-build.log — 10-30 min)
+    - name: Build t4cserver image (log /tmp/t4c-docker-build.log)
       shell: |
         set -o pipefail
         LOG=/tmp/t4c-docker-build.log
         LEGACY="{{ '1' if docker_legacy | bool else '0' }}"
+        docker container prune -f >/dev/null 2>&1 || true
         echo "=== $(date -Is) build t4cserver legacy=${LEGACY} ===" >> "$LOG"
         if [ "$LEGACY" = "1" ]; then
-          docker build --security-opt seccomp=unconfined \
+          docker build --rm --security-opt seccomp=unconfined \
             -f docker/Dockerfile \
             -t t4c-server-linux:local \
             . 2>&1 | tee -a "$LOG"
+          BUILD_RC=${PIPESTATUS[0]}
         else
-          {{ docker_compose_cmd }} build t4cserver 2>&1 | tee -a "$LOG"
+          {{ docker_compose_cmd }} -p {{ compose_project_name }} build t4cserver 2>&1 | tee -a "$LOG"
+          BUILD_RC=${PIPESTATUS[0]}
         fi
-        exit ${PIPESTATUS[0]}
+        docker container prune -f >/dev/null 2>&1 || true
+        exit "$BUILD_RC"
       args:
         chdir: "{{ deploy_dir }}"
       environment:
@@ -639,7 +684,7 @@
       shell: |
         set -o pipefail
         LOG=/tmp/t4c-docker-up.log
-        {{ docker_compose_cmd }} up -d --remove-orphans 2>&1 | tee "$LOG"
+        {{ docker_compose_cmd }} -p {{ compose_project_name }} up -d --remove-orphans --no-build 2>&1 | tee "$LOG"
         exit ${PIPESTATUS[0]}
       args:
         chdir: "{{ deploy_dir }}"
@@ -657,8 +702,8 @@
           {{ lookup('pipe', 'tail -40 /tmp/t4c-docker-up.log 2>/dev/null || echo "(log absent)"') }}
       when: compose_up.rc | default(1) != 0
 
-    - name: Wait for t4cserver container (boot WDA may take minutes)
-      shell: docker ps --filter "name=t4cserver" --filter "status=running" -q | grep -q .
+    - name: Wait for t4c-stack-server container (boot WDA may take minutes)
+      shell: docker ps --filter "name={{ t4c_container_server }}" --filter "status=running" -q | grep -q .
       register: t4c_up
       retries: 30
       delay: 10
@@ -681,8 +726,8 @@
           WorkingDirectory={{ deploy_dir }}
           Environment=COMPOSE_HTTP_TIMEOUT=600
           Environment=DOCKER_CLIENT_TIMEOUT=600
-          ExecStart=/bin/bash -lc 'cd {{ deploy_dir }} && {{ docker_compose_cmd }} up -d'
-          ExecStop=/bin/bash -lc 'cd {{ deploy_dir }} && {{ docker_compose_cmd }} down'
+          ExecStart=/bin/bash -lc 'cd {{ deploy_dir }} && {{ docker_compose_cmd }} -p {{ compose_project_name }} up -d --no-build'
+          ExecStop=/bin/bash -lc 'cd {{ deploy_dir }} && {{ docker_compose_cmd }} -p {{ compose_project_name }} down'
           TimeoutStartSec=600
 
           [Install]
@@ -711,6 +756,7 @@
           - "Dockerfile  : {{ deploy_dir }}/docker/Dockerfile"
           - "Assets      : {{ docker_runtime_dir }}/"
           - "Port UDP    : {{ t4c_udp_port }}"
-          - "Compose cmd : {{ docker_compose_cmd }}"
-          - "Logs        : cd {{ deploy_dir }} && {{ docker_compose_cmd }} logs -f t4cserver"
+          - "Compose     : {{ docker_compose_cmd }} -p {{ compose_project_name }}"
+          - "Conteneurs  : {{ t4c_container_mariadb }}, {{ t4c_container_server }}"
+          - "Logs        : docker logs -f {{ t4c_container_server }}"
           - "Relance safe : ce playbook est idempotent — Ctrl+C / refresh UI OK, relancer."
