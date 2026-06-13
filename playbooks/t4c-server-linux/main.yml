@@ -677,6 +677,16 @@
       changed_when: false
       failed_when: false
 
+    - name: Write .dockerignore to shrink build context (exclude .git + assets)
+      copy:
+        dest: "{{ deploy_dir }}/.dockerignore"
+        content: |
+          .git
+          .gitignore
+          docker/runtime
+          **/logs
+          .env
+
     - name: Pull MariaDB image first
       shell: "{{ docker_compose_cmd }} -p {{ compose_project_name }} pull mariadb"
       args:
@@ -692,17 +702,9 @@
         set -e
         LOG=/tmp/t4c-docker-build.log
         docker container prune -f >/dev/null 2>&1 || true
-        echo "=== $(date -Is) build t4cserver legacy={{ '1' if (docker_legacy | default(no)) else '0' }} ===" >> "$LOG"
-        if [ "{{ '1' if (docker_legacy | default(no)) else '0' }}" = "1" ]; then
-          docker build --rm --security-opt seccomp=unconfined \
-            -f docker/Dockerfile \
-            -t t4c-server-linux:local \
-            . >>"$LOG" 2>&1
-          BUILD_RC=$?
-        else
-          {{ docker_compose_cmd }} -p {{ compose_project_name }} build t4cserver >>"$LOG" 2>&1
-          BUILD_RC=$?
-        fi
+        echo "=== $(date -Is) build t4cserver ===" >> "$LOG"
+        {{ docker_compose_cmd }} -p {{ compose_project_name }} build t4cserver >>"$LOG" 2>&1
+        BUILD_RC=$?
         docker container prune -f >/dev/null 2>&1 || true
         exit "$BUILD_RC"
       args:
@@ -731,9 +733,9 @@
           Dernieres lignes :
           {{ docker_build_log_tail.stdout | default('') }}
 
-          Si erreur pacman/alpm sur Docker 18 :
-            rm -f /tmp/t4c-server-deploy.lock
-            cd {{ deploy_dir }} && docker build --security-opt seccomp=unconfined -f docker/Dockerfile -t t4c-server-linux:local .
+          Si erreur pacman/alpm : verifier le patch dans docker/Dockerfile (pacman-key).
+          Log complet : tail -100 /tmp/t4c-docker-build.log
+          Build manuel : cd {{ deploy_dir }} && {{ docker_compose_cmd }} -p {{ compose_project_name }} build t4cserver
       when: compose_build.rc | default(1) != 0
 
     - name: Start Docker stack
