@@ -856,6 +856,14 @@
 
           text = text.replace("    mariadb-connector-odbc \\\n", "    mariadb-libs \\\n")
 
+          runtime_copy = "COPY docker/runtime/ /opt/t4c-assets/\n"
+          if runtime_copy in text:
+              text = text.replace(
+                  runtime_copy,
+                  "# assets montes via compose (T4C_RUNTIME_ASSETS), pas dans le build context\n"
+                  "RUN mkdir -p /opt/t4c-assets\n",
+              )
+
           text = re.sub(
               r"\nRUN (?:(?:pacman -Sy --noconfirm cmake base-devel \\\n )?"
               r")?(?:&& )?curl -fsSL -o /tmp/mco(?:-src)?\.tgz[^\n]*"
@@ -927,7 +935,7 @@
       changed_when: false
       failed_when: false
 
-    - name: Write .dockerignore to shrink build context (exclude .git + assets)
+    - name: Write .dockerignore to shrink build context (exclude .git; runtime via volume)
       copy:
         dest: "{{ deploy_dir }}/.dockerignore"
         content: |
