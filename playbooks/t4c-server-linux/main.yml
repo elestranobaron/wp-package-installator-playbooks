@@ -30,7 +30,7 @@
     compose_project_name: t4cstack
     t4c_container_mariadb: t4c-stack-mariadb
     t4c_container_server: t4c-stack-server
-    archlinux_legacy_base: "archlinux:base-20220102.0.118459"
+    docker_legacy_base_image: "ubuntu:24.04"
 
   tasks:
     - name: Refuse concurrent deploy if lock is recent
@@ -626,9 +626,62 @@
         docker_legacy: no
       when: docker_legacy_raw.stdout | default('0') | int == 0
 
-    - name: Check Dockerfile legacy Arch pin already applied
-      shell: "grep -q '{{ archlinux_legacy_base }}' \"{{ deploy_dir }}/docker/Dockerfile\""
-      register: dockerfile_legacy_patched
+    - name: Check legacy Ubuntu Dockerfile already applied
+      shell: grep -q 'T4C legacy Docker 18 — Ubuntu base' "{{ deploy_dir }}/docker/Dockerfile"
+      register: dockerfile_legacy_ok
+      changed_when: false
+      failed_when: false
+      when: docker_legacy | default(no)
+
+    - name: Install Ubuntu Dockerfile for Docker 18 (remplace Arch/pacman)
+      copy:
+        dest: "{{ deploy_dir }}/docker/Dockerfile"
+        content: |
+          # T4C legacy Docker 18 — Ubuntu base (Arch/pacman casse sur vieux Docker)
+          FROM {{ docker_legacy_base_image }} AS builder
+
+          ENV DEBIAN_FRONTEND=noninteractive
+          RUN apt-get update && apt-get install -y --no-install-recommends \
+              build-essential cmake pkg-config ca-certificates \
+              libsdl3-dev libssl-dev unixodbc-dev libmariadb-dev \
+            && rm -rf /var/lib/apt/lists/*
+
+          WORKDIR /src
+          COPY . .
+
+          RUN cmake -S . -B build -DCMAKE_CXX_STANDARD=17 -DCMAKE_BUILD_TYPE=Release \
+            && cmake --build build -j"$(nproc)"
+
+          FROM {{ docker_legacy_base_image }} AS runtime
+
+          ENV DEBIAN_FRONTEND=noninteractive
+          RUN apt-get update && apt-get install -y --no-install-recommends \
+              libsdl3-0t64 libssl3t64 unixodbc mariadb-connector-odbc gettext-base \
+              ca-certificates \
+            && rm -rf /var/lib/apt/lists/*
+
+          WORKDIR /srv/t4c
+
+          COPY --from=builder /src/build/T4CServer ./T4CServer
+          COPY docker/odbc/ /opt/t4c-odbc/
+          COPY docker/entrypoint.sh /usr/local/bin/t4c-entrypoint.sh
+
+          RUN chmod +x /usr/local/bin/t4c-entrypoint.sh ./T4CServer \
+            && mkdir -p logs WDA /opt/t4c-assets
+
+          ENV T4C_APP_DIR=/srv/t4c \
+              T4C_ASSETS_DIR=/opt/t4c-assets \
+              T4C_VERIFY_WDA_MD5=1
+
+          EXPOSE 11677/udp
+
+          ENTRYPOINT ["/usr/local/bin/t4c-entrypoint.sh"]
+      when:
+        - docker_legacy | default(no)
+        - dockerfile_legacy_ok.rc | default(1) != 0
+
+    - name: Pre-pull Ubuntu base for legacy Docker build
+      shell: "docker pull {{ docker_legacy_base_image }}"
       changed_when: false
       failed_when: false
       when: docker_legacy | default(no)
@@ -639,45 +692,6 @@
       changed_when: false
       failed_when: false
       when: not (docker_legacy | default(no))
-
-    - name: Install Dockerfile legacy Arch pin script (Docker 18)
-      copy:
-        dest: /tmp/t4c-patch-dockerfile-legacy.py
-        mode: "0755"
-        content: |
-          #!/usr/bin/env python3
-          import pathlib
-          import sys
-          base = "{{ archlinux_legacy_base }}"
-          p = pathlib.Path("{{ deploy_dir }}/docker/Dockerfile")
-          text = p.read_text()
-          if base in text:
-              sys.exit(0)
-          if "FROM archlinux:latest" not in text:
-              sys.stderr.write("FROM archlinux:latest introuvable dans Dockerfile\n")
-              sys.exit(1)
-          text = text.replace("FROM archlinux:latest AS builder", "FROM %s AS builder" % base)
-          text = text.replace("FROM archlinux:latest AS runtime", "FROM %s AS runtime" % base)
-          p.write_text(text)
-          sys.exit(0)
-      when:
-        - docker_legacy | default(no)
-        - dockerfile_legacy_patched.rc | default(1) != 0
-
-    - name: Pin Arch base image in Dockerfile (Docker 18)
-      shell: python3 /tmp/t4c-patch-dockerfile-legacy.py
-      register: dockerfile_legacy_patch_run
-      changed_when: dockerfile_legacy_patch_run.rc == 0
-      failed_when: dockerfile_legacy_patch_run.rc != 0
-      when:
-        - docker_legacy | default(no)
-        - dockerfile_legacy_patched.rc | default(1) != 0
-
-    - name: Pre-pull pinned Arch base for legacy Docker build
-      shell: "docker pull {{ archlinux_legacy_base }}"
-      changed_when: false
-      failed_when: false
-      when: docker_legacy | default(no)
 
     - name: Install Dockerfile pacman patch script (Docker 20+)
       copy:
@@ -754,7 +768,8 @@
         set -e
         LOG=/tmp/t4c-docker-build.log
         docker container prune -f >/dev/null 2>&1 || true
-        echo "=== $(date -Is) build t4cserver ===" >> "$LOG"
+        : > "$LOG"
+        echo "=== $(date -Is) build t4cserver legacy={{ docker_legacy | default(no) }} ===" >> "$LOG"
         {{ docker_compose_cmd }} -p {{ compose_project_name }} build t4cserver >>"$LOG" 2>&1
         BUILD_RC=$?
         docker container prune -f >/dev/null 2>&1 || true
@@ -779,13 +794,12 @@
       fail:
         msg: |
           Build image t4cserver echoue (rc={{ compose_build.rc }}).
-          Docker legacy={{ docker_legacy | default(no) }}
+          Docker legacy={{ docker_legacy | default(no) }} (base {{ docker_legacy_base_image }} si legacy)
 
           Log : /tmp/t4c-docker-build.log
           Dernieres lignes :
           {{ docker_build_log_tail.stdout | default('') }}
 
-          Si erreur pacman/alpm : Docker 18 utilise {{ archlinux_legacy_base }} (pas latest).
           Log complet : tail -100 /tmp/t4c-docker-build.log
           Build manuel : cd {{ deploy_dir }} && {{ docker_compose_cmd }} -p {{ compose_project_name }} build t4cserver
       when: compose_build.rc | default(1) != 0
