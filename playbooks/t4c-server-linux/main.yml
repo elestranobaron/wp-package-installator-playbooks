@@ -30,6 +30,8 @@
     compose_project_name: t4cstack
     t4c_container_mariadb: t4c-stack-mariadb
     t4c_container_server: t4c-stack-server
+    t4c_image_name: t4c-server-linux:local
+    t4c_build_stamp_file: "{{ deploy_dir }}/.t4c-docker-build.stamp"
     mariadb_odbc_src_url: "https://mirror.mariadb.org/connector-odbc-3.2.7/mariadb-connector-odbc-3.2.7-src.tar.gz"
     mariadb_connc_src_url: "https://mirror.mariadb.org/connector-c-3.4.7/mariadb-connector-c-3.4.7-src.tar.gz"
 
@@ -963,9 +965,9 @@
     - name: Purge orphan t4c containers from failed runs
       shell: |
         set +e
+        docker rm -f {{ t4c_container_mariadb }} {{ t4c_container_server }} 2>/dev/null
         for id in $(docker ps -aq --filter "name=t4c-server_mariadb"); do docker rm -f "$id"; done
         for id in $(docker ps -aq --filter "name=t4c-server_t4cserver"); do docker rm -f "$id"; done
-        docker container prune -f >/dev/null
       args:
         executable: /bin/bash
       changed_when: false
@@ -1003,6 +1005,53 @@
         timeout: 30
       when: not (docker_legacy | default(no))
 
+    - name: Compute Docker build stamp (rebuild only when these change)
+      shell: |
+        cd "{{ deploy_dir }}"
+        { test -f docker/Dockerfile && cat docker/Dockerfile; \
+          test -f docker/entrypoint.sh && cat docker/entrypoint.sh; \
+          test -f docker/odbc/odbcinst.ini && cat docker/odbc/odbcinst.ini; \
+        } | md5sum | awk '{print $1}'
+      register: t4c_build_stamp
+      changed_when: false
+      failed_when: false
+
+    - name: Read previous Docker build stamp
+      shell: cat "{{ t4c_build_stamp_file }}" 2>/dev/null || true
+      register: t4c_old_build_stamp
+      changed_when: false
+      failed_when: false
+
+    - name: Check fixed-tag t4c image exists locally
+      shell: docker image inspect {{ t4c_image_name }} >/dev/null 2>&1
+      register: t4c_image_present
+      changed_when: false
+      failed_when: false
+
+    - name: Skip docker build when stamp unchanged and image present
+      set_fact:
+        t4c_skip_docker_build: yes
+      when:
+        - t4c_image_present.rc | default(1) == 0
+        - t4c_old_build_stamp.stdout | default('') | trim == t4c_build_stamp.stdout | default('') | trim
+
+    - name: Default run docker build
+      set_fact:
+        t4c_skip_docker_build: no
+      when: t4c_skip_docker_build is not defined
+
+    - name: Show docker build plan
+      debug:
+        msg: "image={{ t4c_image_name }} — build={{ 'skip (stamp inchangé)' if t4c_skip_docker_build else 'rebuild' }} — stamp={{ t4c_build_stamp.stdout | trim }}"
+
+    - name: Stop t4cserver and remove fixed-tag image before rebuild
+      shell: |
+        docker rm -f {{ t4c_container_server }} 2>/dev/null || true
+        docker rmi {{ t4c_image_name }} 2>/dev/null || true
+      changed_when: false
+      failed_when: false
+      when: not (t4c_skip_docker_build | default(no))
+
     - name: Pull MariaDB image first
       shell: "{{ docker_compose_cmd }} -p {{ compose_project_name }} pull mariadb"
       args:
@@ -1017,21 +1066,28 @@
       shell: |
         set -e
         LOG=/tmp/t4c-docker-build.log
-        docker container prune -f >/dev/null 2>&1 || true
         : > "$LOG"
-        echo "=== $(date -Is) build t4cserver legacy={{ docker_legacy | default(no) }} ===" >> "$LOG"
+        echo "=== $(date -Is) build t4cserver image={{ t4c_image_name }} legacy={{ docker_legacy | default(no) }} ===" >> "$LOG"
         {{ docker_compose_cmd }} -p {{ compose_project_name }} build t4cserver >>"$LOG" 2>&1
-        BUILD_RC=$?
-        docker container prune -f >/dev/null 2>&1 || true
-        exit "$BUILD_RC"
+        echo "$BUILD_STAMP" > "{{ t4c_build_stamp_file }}"
       args:
         chdir: "{{ deploy_dir }}"
       environment:
         COMPOSE_HTTP_TIMEOUT: "1200"
         DOCKER_CLIENT_TIMEOUT: "1200"
-        DOCKER_BUILDKIT: "0"
+        DOCKER_BUILDKIT: "{{ '0' if (docker_legacy | default(no)) else '1' }}"
+        COMPOSE_DOCKER_CLI_BUILD: "{{ '0' if (docker_legacy | default(no)) else '1' }}"
+        BUILD_STAMP: "{{ t4c_build_stamp.stdout | trim }}"
       register: compose_build
       failed_when: false
+      when: not (t4c_skip_docker_build | default(no))
+
+    - name: Mark docker build skipped (stamp inchange, image deja presente)
+      set_fact:
+        compose_build:
+          rc: 0
+          skipped: true
+      when: t4c_skip_docker_build | default(no)
 
     - name: Read docker build log tail on failure
       shell: tail -60 /tmp/t4c-docker-build.log 2>/dev/null || echo "(log absent)"
@@ -1183,6 +1239,7 @@
           - "Assets      : {{ docker_runtime_dir }}/"
           - "Port UDP    : {{ t4c_udp_port }}"
           - "Compose     : {{ docker_compose_cmd }} -p {{ compose_project_name }}"
+          - "Image       : {{ t4c_image_name }}"
           - "Conteneurs  : {{ t4c_container_mariadb }}, {{ t4c_container_server }}"
           - "Logs        : docker logs -f {{ t4c_container_server }}"
           - "Relance safe : ce playbook est idempotent — Ctrl+C / refresh UI OK, relancer."
