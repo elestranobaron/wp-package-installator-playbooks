@@ -543,11 +543,35 @@
           T4C_UDP_PORT={{ t4c_udp_port }}
           T4C_RUNTIME_ASSETS={{ docker_runtime_dir }}
           T4C_VERIFY_WDA_MD5={{ '1' if (t4c_verify_wda_md5 | bool) else '0' }}
+          COMPOSE_HTTP_TIMEOUT=1200
+          DOCKER_CLIENT_TIMEOUT=1200
 
-    - name: Build and start stack via docker/Dockerfile (safe to re-run after Ctrl+C)
-      shell: "{{ docker_compose_cmd }} up -d --build --remove-orphans"
+    - name: Build Docker images (Arch Dockerfile — long sur Docker 18 / compose v1)
+      shell: "{{ docker_compose_cmd }} build"
       args:
         chdir: "{{ deploy_dir }}"
+      environment:
+        COMPOSE_HTTP_TIMEOUT: "1200"
+        DOCKER_CLIENT_TIMEOUT: "1200"
+        DOCKER_BUILDKIT: "0"
+      register: compose_build
+      retries: 2
+      delay: 60
+      until: compose_build.rc == 0
+      async: 3600
+      poll: 30
+
+    - name: Start Docker stack
+      shell: "{{ docker_compose_cmd }} up -d --remove-orphans"
+      args:
+        chdir: "{{ deploy_dir }}"
+      environment:
+        COMPOSE_HTTP_TIMEOUT: "600"
+        DOCKER_CLIENT_TIMEOUT: "600"
+      register: compose_up
+      retries: 3
+      delay: 30
+      until: compose_up.rc == 0
 
     - name: Wait for t4cserver container (boot WDA may take minutes)
       shell: docker ps --filter "name=t4cserver" --filter "status=running" -q | grep -q .
@@ -571,6 +595,8 @@
           Type=oneshot
           RemainAfterExit=yes
           WorkingDirectory={{ deploy_dir }}
+          Environment=COMPOSE_HTTP_TIMEOUT=600
+          Environment=DOCKER_CLIENT_TIMEOUT=600
           ExecStart=/bin/bash -lc 'cd {{ deploy_dir }} && {{ docker_compose_cmd }} up -d'
           ExecStop=/bin/bash -lc 'cd {{ deploy_dir }} && {{ docker_compose_cmd }} down'
           TimeoutStartSec=600
