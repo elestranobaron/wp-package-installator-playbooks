@@ -31,6 +31,7 @@
     t4c_container_mariadb: t4c-stack-mariadb
     t4c_container_server: t4c-stack-server
     mariadb_odbc_src_url: "https://mirror.mariadb.org/connector-odbc-3.2.7/mariadb-connector-odbc-3.2.7-src.tar.gz"
+    mariadb_connc_src_url: "https://mirror.mariadb.org/connector-c-3.4.7/mariadb-connector-c-3.4.7-src.tar.gz"
 
   tasks:
     - name: Refuse concurrent deploy if lock is recent
@@ -834,7 +835,8 @@
           import sys
 
           MCO_SRC = "{{ mariadb_odbc_src_url }}"
-          MCO_MARKER = "mirror.mariadb.org/connector-odbc-3.2.7"
+          MCC_SRC = "{{ mariadb_connc_src_url }}"
+          MCO_MARKER = "mariadb-connector-c-3.4.7-src.tar.gz"
 
           p = pathlib.Path("{{ deploy_dir }}/docker/Dockerfile")
           text = p.read_text()
@@ -854,7 +856,8 @@
                   sys.exit(1)
               text = text.replace(old, new)
 
-          text = text.replace("    mariadb-connector-odbc \\\n", "    mariadb-libs \\\n")
+          text = text.replace("    mariadb-connector-odbc \\\n", "")
+          text = text.replace("    mariadb-libs \\\n", "")
 
           runtime_copy = "COPY docker/runtime/ /opt/t4c-assets/\n"
           if runtime_copy in text:
@@ -866,13 +869,13 @@
 
           text = re.sub(
               r"\nRUN (?:(?:pacman -Sy --noconfirm cmake base-devel \\\n )?"
-              r")?(?:&& )?curl -fsSL -o /tmp/mco(?:-src)?\.tgz[^\n]*"
+              r")?(?:&& )?curl -fsSL -o /tmp/m(?:co|cc)-src\.tgz[^\n]*"
               r"(?:\\?\n(?: &&[^\n\\]*)*)+",
               "",
               text,
           )
 
-          if MCO_MARKER not in text:
+          if MCO_MARKER not in text or "USE_SYSTEM_INSTALLED_LIB" in text:
               marker = "FROM archlinux:latest AS runtime"
               idx = text.find(marker)
               if idx < 0:
@@ -891,16 +894,21 @@
               odbc_run = (
                   "\nRUN pacman -Sy --noconfirm cmake base-devel \\\n"
                   f" && curl -fsSL -o /tmp/mco-src.tgz \"{MCO_SRC}\" \\\n"
-                  " && mkdir -p /tmp/mco-src /tmp/mco-build \\\n"
+                  f" && curl -fsSL -o /tmp/mcc-src.tgz \"{MCC_SRC}\" \\\n"
+                  " && mkdir -p /tmp/mco-src /tmp/mco-src/libmariadb /tmp/mco-build \\\n"
                   " && tar -xzf /tmp/mco-src.tgz -C /tmp/mco-src --strip-components=1 \\\n"
+                  " && tar -xzf /tmp/mcc-src.tgz -C /tmp/mco-src/libmariadb --strip-components=1 \\\n"
                   " && cmake -S /tmp/mco-src -B /tmp/mco-build \\\n"
-                  "    -DCMAKE_BUILD_TYPE=Release -DCONC_WITH_UNIT_TESTS=Off \\\n"
-                  "    -DUSE_SYSTEM_INSTALLED_LIB=ON -DCMAKE_INSTALL_PREFIX=/usr \\\n"
+                  "    -DCMAKE_BUILD_TYPE=Release -DCONC_WITH_UNIT_TESTS=Off -DCMAKE_INSTALL_PREFIX=/usr \\\n"
                   " && cmake --build /tmp/mco-build -j\"$(nproc)\" \\\n"
-                  " && MAODBC=\"$(find /tmp/mco-build -name 'libmaodbc.so' -type f | head -1)\" \\\n"
-                  " && test -n \"$MAODBC\" \\\n"
+                  " && cmake --install /tmp/mco-build \\\n"
+                  " && MAODBC=\"$(find /usr/lib /tmp/mco-build -name 'libmaodbc.so' -type f | head -1)\" \\\n"
+                  " && LMARIADB=\"$(find /usr/lib /tmp/mco-build -name 'libmariadb.so*' -type f | head -1)\" \\\n"
+                  " && test -n \"$MAODBC\" && test -n \"$LMARIADB\" \\\n"
                   " && install -m 755 \"$MAODBC\" /usr/lib/libmaodbc.so \\\n"
-                  " && rm -rf /tmp/mco-src.tgz /tmp/mco-src /tmp/mco-build \\\n"
+                  " && install -m 755 \"$LMARIADB\" /usr/lib/libmariadb.so \\\n"
+                  " && ldconfig \\\n"
+                  " && rm -rf /tmp/mco-src.tgz /tmp/mcc-src.tgz /tmp/mco-src /tmp/mco-build \\\n"
                   " && pacman -Rns --noconfirm cmake base-devel \\\n"
                   " && pacman -Scc --noconfirm\n"
               )
@@ -915,6 +923,34 @@
 
           p.write_text(text)
           sys.exit(0)
+      when: not (docker_legacy | default(no))
+
+    - name: Patch docker ODBC driver registration (Driver only, no Setup=)
+      copy:
+        dest: "{{ deploy_dir }}/docker/odbc/odbcinst.ini"
+        content: |
+          [MariaDB]
+          Description=MariaDB ODBC driver
+          Driver=/usr/lib/libmaodbc.so
+          UsageCount=1
+      when: not (docker_legacy | default(no))
+
+    - name: Patch entrypoint ODBC preflight before T4CServer start
+      lineinfile:
+        path: "{{ deploy_dir }}/docker/entrypoint.sh"
+        insertbefore: '^cd "\$APP_DIR"'
+        line: |
+          if command -v isql >/dev/null 2>&1; then
+              log "ODBC preflight -> DSN 'T4C Server Authentication' host=${T4C_DB_HOST}:${T4C_DB_PORT} db=${T4C_DB_NAME}"
+              if ! printf 'SELECT 1;\n' | isql -b -v "T4C Server Authentication" "$T4C_DB_USER" "$T4C_DB_PASSWORD" >/tmp/t4c-odbc-preflight.log 2>&1; then
+                  log "FAIL: ODBC preflight — driver/DSN MariaDB inaccessible"
+                  tail -20 /tmp/t4c-odbc-preflight.log >&2 || true
+                  exit 111
+              fi
+              log "ODBC preflight OK"
+          else
+              log "WARN: isql absent — ODBC preflight skipped"
+          fi
       when: not (docker_legacy | default(no))
 
     - name: Patch Arch Dockerfile (pacman-key + MariaDB ODBC)
@@ -952,6 +988,15 @@
     - name: Verify MariaDB ODBC source tarball reachable (fail fast before Docker build)
       uri:
         url: "{{ mariadb_odbc_src_url }}"
+        method: HEAD
+        follow_redirects: all
+        status_code: 200
+        timeout: 30
+      when: not (docker_legacy | default(no))
+
+    - name: Verify MariaDB Connector/C source tarball reachable
+      uri:
+        url: "{{ mariadb_connc_src_url }}"
         method: HEAD
         follow_redirects: all
         status_code: 200
