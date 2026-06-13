@@ -604,16 +604,19 @@
           COMPOSE_HTTP_TIMEOUT=1200
           DOCKER_CLIENT_TIMEOUT=1200
 
-    - name: Detect legacy Docker build flags (Docker 18 / compose v1)
+    - name: Detect legacy Docker build flags (Docker engine older than 20 only)
       shell: |
         LEGACY=0
         V=$(docker version --format '{{ "{{" }}.Server.Version{{ "}}" }}' 2>/dev/null | cut -d. -f1)
         if [ -n "$V" ] && [ "$V" -lt 20 ] 2>/dev/null; then LEGACY=1; fi
-        if [ "{{ docker_compose_cmd }}" != "docker compose" ]; then LEGACY=1; fi
         echo "$LEGACY"
       register: docker_legacy_raw
       changed_when: false
       failed_when: false
+
+    - name: Show Docker build mode
+      debug:
+        msg: "compose={{ docker_compose_cmd }} — legacy={{ docker_legacy_raw.stdout | trim }} (1=Docker 18, 0=Arch Dockerfile du repo)"
 
     - name: Set docker legacy flag
       set_fact:
@@ -662,6 +665,18 @@
       failed_when: false
       when: docker_legacy | default(no)
 
+    - name: "[legacy] Install cmake 3.16+ from backports on Debian 10"
+      apt:
+        name: cmake
+        state: present
+        default_release: buster-backports
+        update_cache: no
+      failed_when: false
+      when:
+        - docker_legacy | default(no)
+        - ansible_os_family == "Debian"
+        - ansible_distribution_major_version | int == 10
+
     - name: "[legacy] Install SDL3 build script on host"
       copy:
         dest: /tmp/t4c-build-sdl3.sh
@@ -669,36 +684,62 @@
         content: |
           #!/bin/bash
           set -euo pipefail
-          if ls /usr/local/lib/libSDL3.so* >/dev/null 2>&1; then
+          DEPS="{{ deploy_dir }}/.deps"
+          SDL_SRC="$DEPS/SDL"
+          SDL_BUILD="$DEPS/SDL/build"
+          LOG=/tmp/t4c-sdl3-build.log
+
+          if ls "$SDL_BUILD"/libSDL3.so* >/dev/null 2>&1; then
+            echo "SDL3 deja present dans $SDL_BUILD" >> "$LOG"
             exit 0
           fi
-          git clone --depth 1 --branch release-3.2.8 https://github.com/libsdl-org/SDL.git /tmp/SDL
-          cmake -S /tmp/SDL -B /tmp/SDL/build -DCMAKE_BUILD_TYPE=Release -DSDL_WAYLAND=OFF
-          cmake --build /tmp/SDL/build -j"$(nproc)"
-          cmake --install /tmp/SDL/build
-          rm -rf /tmp/SDL
+
+          echo "=== $(date -Is) build SDL3 ===" >> "$LOG"
+          cmake --version >> "$LOG" 2>&1
+          rm -rf "$SDL_SRC"
+          mkdir -p "$DEPS"
+          git clone --depth 1 --branch release-3.2.8 https://github.com/libsdl-org/SDL.git "$SDL_SRC" >> "$LOG" 2>&1
+          cmake -S "$SDL_SRC" -B "$SDL_BUILD" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSDL_SHARED=ON \
+            -DSDL_STATIC=OFF \
+            -DSDL_WAYLAND=OFF \
+            -DSDL_PIPEWIRE=OFF >> "$LOG" 2>&1
+          cmake --build "$SDL_BUILD" -j"$(nproc)" >> "$LOG" 2>&1
+          ls -la "$SDL_BUILD"/libSDL3.so* >> "$LOG" 2>&1
+          test -f "$SDL_BUILD/libSDL3.so" || ls "$SDL_BUILD"/libSDL3.so* >/dev/null
       when: docker_legacy | default(no)
 
     - name: "[legacy] Build SDL3 on host if missing"
-      shell: /tmp/t4c-build-sdl3.sh >> /tmp/t4c-sdl3-build.log 2>&1
+      shell: /tmp/t4c-build-sdl3.sh
       args:
         executable: /bin/bash
       register: sdl3_host_build
-      failed_when: false
       when: docker_legacy | default(no)
 
-    - name: "[legacy] Verify SDL3 installed on host"
-      shell: ls /usr/local/lib/libSDL3.so* >/dev/null 2>&1
+    - name: "[legacy] Verify SDL3 built in repo .deps"
+      shell: ls "{{ deploy_dir }}/.deps/SDL/build/libSDL3.so*" >/dev/null 2>&1
       register: sdl3_on_host
       changed_when: false
       failed_when: false
       when: docker_legacy | default(no)
 
+    - name: "[legacy] Read SDL3 build log tail on failure"
+      shell: tail -40 /tmp/t4c-sdl3-build.log 2>/dev/null || echo "(log absent)"
+      register: sdl3_log_tail
+      changed_when: false
+      failed_when: false
+      when:
+        - docker_legacy | default(no)
+        - sdl3_on_host.rc | default(1) != 0
+
     - name: "[legacy] Fail if SDL3 missing on host"
       fail:
         msg: |
-          SDL3 introuvable sur l'hote apres build (/usr/local/lib/libSDL3.so*).
-          Log build SDL3 : /tmp/t4c-sdl3-build.log
+          SDL3 introuvable dans {{ deploy_dir }}/.deps/SDL/build/ (cmake 3.16+ requis sur Debian 10).
+
+          Log : /tmp/t4c-sdl3-build.log
+          {{ sdl3_log_tail.stdout | default('') }}
       when:
         - docker_legacy | default(no)
         - sdl3_on_host.rc | default(1) != 0
@@ -706,7 +747,8 @@
     - name: "[legacy] Build T4CServer natively on host"
       shell: |
         cd "{{ deploy_dir }}"
-        cmake -S . -B build -DCMAKE_CXX_STANDARD=17 -DCMAKE_BUILD_TYPE=Release
+        cmake -S . -B build -DCMAKE_CXX_STANDARD=17 -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_PREFIX_PATH="{{ deploy_dir }}/.deps/SDL/build"
         cmake --build build -j"$(nproc)"
       register: t4c_native_build
       failed_when: false
@@ -733,11 +775,14 @@
         copy_libs() {
           ldd "$1" 2>/dev/null | awk '/=> \// {print $3}' | sort -u | while read -r lib; do
             [ -f "$lib" ] || continue
+            case "$lib" in
+              /lib/x86_64-linux-gnu/libc.so*|/lib64/libc.so*|/lib*/ld-linux*) continue ;;
+            esac
             cp -a "$lib" "$ST/lib/"
           done
         }
         copy_libs "$BIN"
-        for f in /usr/local/lib/libSDL3.so*; do
+        for f in "{{ deploy_dir }}/.deps/SDL/build"/libSDL3.so*; do
           [ -e "$f" ] && cp -a "$f" "$ST/lib/"
         done
         if command -v envsubst >/dev/null 2>&1; then
@@ -841,6 +886,7 @@
           .git
           .gitignore
           docker/runtime
+          .deps
           **/logs
           .env
 
