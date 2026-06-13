@@ -30,6 +30,7 @@
     compose_project_name: t4cstack
     t4c_container_mariadb: t4c-stack-mariadb
     t4c_container_server: t4c-stack-server
+    mariadb_odbc_src_url: "https://mirror.mariadb.org/connector-odbc-3.2.7/mariadb-connector-odbc-3.2.7-src.tar.gz"
 
   tasks:
     - name: Refuse concurrent deploy if lock is recent
@@ -829,7 +830,11 @@
         content: |
           #!/usr/bin/env python3
           import pathlib
+          import re
           import sys
+
+          MCO_SRC = "{{ mariadb_odbc_src_url }}"
+          MCO_MARKER = "mirror.mariadb.org/connector-odbc-3.2.7"
 
           p = pathlib.Path("{{ deploy_dir }}/docker/Dockerfile")
           text = p.read_text()
@@ -849,8 +854,17 @@
                   sys.exit(1)
               text = text.replace(old, new)
 
-          if "downloads.mariadb.com/Connectors/odbc" not in text:
-              text = text.replace("    mariadb-connector-odbc \\\n", "")
+          text = text.replace("    mariadb-connector-odbc \\\n", "    mariadb-libs \\\n")
+
+          text = re.sub(
+              r"\nRUN (?:(?:pacman -Sy --noconfirm cmake base-devel \\\n )?"
+              r")?(?:&& )?curl -fsSL -o /tmp/mco(?:-src)?\.tgz[^\n]*"
+              r"(?:\\?\n(?: &&[^\n\\]*)*)+",
+              "",
+              text,
+          )
+
+          if MCO_MARKER not in text:
               marker = "FROM archlinux:latest AS runtime"
               idx = text.find(marker)
               if idx < 0:
@@ -867,15 +881,20 @@
                       1,
                   )
               odbc_run = (
-                  "\nRUN curl -fsSL -o /tmp/mco.tgz "
-                  "\"https://downloads.mariadb.com/Connectors/odbc/connector-odbc-3.2.7/"
-                  "mariadb-connector-odbc-3.2.7-linux-x86_64.tar.gz\" \\\n"
-                  " && mkdir -p /tmp/mco \\\n"
-                  " && tar -xzf /tmp/mco.tgz -C /tmp/mco \\\n"
-                  " && MAODBC=\"$(find /tmp/mco -name libmaodbc.so | head -1)\" \\\n"
+                  "\nRUN pacman -Sy --noconfirm cmake base-devel \\\n"
+                  f" && curl -fsSL -o /tmp/mco-src.tgz \"{MCO_SRC}\" \\\n"
+                  " && mkdir -p /tmp/mco-src /tmp/mco-build \\\n"
+                  " && tar -xzf /tmp/mco-src.tgz -C /tmp/mco-src --strip-components=1 \\\n"
+                  " && cmake -S /tmp/mco-src -B /tmp/mco-build \\\n"
+                  "    -DCMAKE_BUILD_TYPE=Release -DCONC_WITH_UNIT_TESTS=Off \\\n"
+                  "    -DUSE_SYSTEM_INSTALLED_LIB=ON -DCMAKE_INSTALL_PREFIX=/usr \\\n"
+                  " && cmake --build /tmp/mco-build -j\"$(nproc)\" \\\n"
+                  " && MAODBC=\"$(find /tmp/mco-build -name 'libmaodbc.so' -type f | head -1)\" \\\n"
                   " && test -n \"$MAODBC\" \\\n"
                   " && install -m 755 \"$MAODBC\" /usr/lib/libmaodbc.so \\\n"
-                  " && rm -rf /tmp/mco.tgz /tmp/mco\n"
+                  " && rm -rf /tmp/mco-src.tgz /tmp/mco-src /tmp/mco-build \\\n"
+                  " && pacman -Rns --noconfirm cmake base-devel \\\n"
+                  " && pacman -Scc --noconfirm\n"
               )
               scc = "&& pacman -Scc --noconfirm"
               pos = runtime_head.find(scc)
@@ -921,6 +940,15 @@
           docker/staging/
           **/logs
           .env
+
+    - name: Verify MariaDB ODBC source tarball reachable (fail fast before Docker build)
+      uri:
+        url: "{{ mariadb_odbc_src_url }}"
+        method: HEAD
+        follow_redirects: all
+        status_code: 200
+        timeout: 30
+      when: not (docker_legacy | default(no))
 
     - name: Pull MariaDB image first
       shell: "{{ docker_compose_cmd }} -p {{ compose_project_name }} pull mariadb"
