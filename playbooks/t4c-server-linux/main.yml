@@ -421,6 +421,11 @@
         wda_missing: "{{ wda_check_local.rc != 0 }}"
       when: local_wda.stat.exists
 
+    - name: Assets Vircom deja valides — skip MEGA (normal)
+      debug:
+        msg: "WDA OK dans {{ docker_runtime_dir }} — etapes MEGA skipees, on continue vers Docker."
+      when: not wda_missing | bool
+
     - name: Download Vircom assets from MEGA when still missing
       when: wda_missing | bool
       block:
@@ -546,8 +551,65 @@
           COMPOSE_HTTP_TIMEOUT=1200
           DOCKER_CLIENT_TIMEOUT=1200
 
-    - name: Build Docker images (Arch Dockerfile — long sur Docker 18 / compose v1)
-      shell: "{{ docker_compose_cmd }} build"
+    - name: Detect Docker engine version for legacy build workarounds
+      shell: docker version --format '{{ "{{" }}.Server.Version{{ "}}" }}' 2>/dev/null || echo "0.0.0"
+      register: docker_server_version_raw
+      changed_when: false
+      failed_when: false
+
+    - name: Set legacy Docker build flags (Docker 18 / compose v1)
+      set_fact:
+        docker_legacy: >-
+          {{
+            (docker_server_version_raw.stdout | trim).split('.')[0] | int(99) < 20
+            or docker_compose_cmd != 'docker compose'
+          }}
+
+    - name: Check Arch Dockerfile pacman patch already applied
+      shell: grep -q 'pacman-key --init' "{{ deploy_dir }}/docker/Dockerfile"
+      register: dockerfile_pacman_patched
+      changed_when: false
+      failed_when: false
+
+    - name: Patch Arch Dockerfile pacman init (Docker 18 / fresh Arch base)
+      replace:
+        path: "{{ deploy_dir }}/docker/Dockerfile"
+        regexp: '^RUN pacman -Sy --noconfirm \\$'
+        replace: |-
+          RUN mkdir -p /var/lib/pacman/sync /var/lib/pacman/local \
+           && pacman-key --init \
+           && pacman-key --populate archlinux \
+           && pacman -Sy --noconfirm archlinux-keyring \
+           && pacman -Su --noconfirm \
+           && pacman -Sy --noconfirm \
+        replace_all: yes
+      when: dockerfile_pacman_patched.rc != 0
+
+    - name: Pull MariaDB image first
+      shell: "{{ docker_compose_cmd }} pull mariadb"
+      args:
+        chdir: "{{ deploy_dir }}"
+      environment:
+        COMPOSE_HTTP_TIMEOUT: "1200"
+        DOCKER_CLIENT_TIMEOUT: "1200"
+      register: compose_pull
+      failed_when: false
+
+    - name: Build t4cserver image (log /tmp/t4c-docker-build.log — 10-30 min)
+      shell: |
+        set -o pipefail
+        LOG=/tmp/t4c-docker-build.log
+        LEGACY="{{ '1' if docker_legacy | bool else '0' }}"
+        echo "=== $(date -Is) build t4cserver legacy=${LEGACY} ===" >> "$LOG"
+        if [ "$LEGACY" = "1" ]; then
+          docker build --security-opt seccomp=unconfined \
+            -f docker/Dockerfile \
+            -t t4c-server-linux:local \
+            . 2>&1 | tee -a "$LOG"
+        else
+          {{ docker_compose_cmd }} build t4cserver 2>&1 | tee -a "$LOG"
+        fi
+        exit ${PIPESTATUS[0]}
       args:
         chdir: "{{ deploy_dir }}"
       environment:
@@ -555,23 +617,45 @@
         DOCKER_CLIENT_TIMEOUT: "1200"
         DOCKER_BUILDKIT: "0"
       register: compose_build
-      retries: 2
-      delay: 60
-      until: compose_build.rc == 0
-      async: 3600
-      poll: 30
+      failed_when: false
+
+    - name: Fail if docker build failed (voir log)
+      fail:
+        msg: |
+          Build image t4cserver echoue (rc={{ compose_build.rc }}).
+          Docker legacy={{ docker_legacy | bool }} (engine {{ docker_server_version_raw.stdout | trim }})
+
+          Log : /tmp/t4c-docker-build.log
+          Dernieres lignes :
+          {{ lookup('pipe', 'tail -60 /tmp/t4c-docker-build.log 2>/dev/null || echo "(log absent)"') }}
+
+          Erreur pacman/alpm sur Docker 18 : le playbook patche docker/Dockerfile
+          (pacman-key) et build avec seccomp=unconfined. Si ca persiste :
+            rm -f /tmp/t4c-server-deploy.lock
+            cd {{ deploy_dir }} && docker build --security-opt seccomp=unconfined -f docker/Dockerfile -t t4c-server-linux:local .
+      when: compose_build.rc | default(1) != 0
 
     - name: Start Docker stack
-      shell: "{{ docker_compose_cmd }} up -d --remove-orphans"
+      shell: |
+        set -o pipefail
+        LOG=/tmp/t4c-docker-up.log
+        {{ docker_compose_cmd }} up -d --remove-orphans 2>&1 | tee "$LOG"
+        exit ${PIPESTATUS[0]}
       args:
         chdir: "{{ deploy_dir }}"
       environment:
-        COMPOSE_HTTP_TIMEOUT: "600"
-        DOCKER_CLIENT_TIMEOUT: "600"
+        COMPOSE_HTTP_TIMEOUT: "1200"
+        DOCKER_CLIENT_TIMEOUT: "1200"
       register: compose_up
-      retries: 3
-      delay: 30
-      until: compose_up.rc == 0
+      failed_when: false
+
+    - name: Fail if docker up failed (voir log)
+      fail:
+        msg: |
+          docker-compose up a echoue (rc={{ compose_up.rc }}).
+          Log : /tmp/t4c-docker-up.log
+          {{ lookup('pipe', 'tail -40 /tmp/t4c-docker-up.log 2>/dev/null || echo "(log absent)"') }}
+      when: compose_up.rc | default(1) != 0
 
     - name: Wait for t4cserver container (boot WDA may take minutes)
       shell: docker ps --filter "name=t4cserver" --filter "status=running" -q | grep -q .
