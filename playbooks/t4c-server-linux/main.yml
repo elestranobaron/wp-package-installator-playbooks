@@ -540,7 +540,7 @@
         - sync-runtime-from-build.sh
 
     - name: Check docker-compose fixed container names already applied
-      shell: grep -q 'container_name: {{ t4c_container_mariadb }}' "{{ deploy_dir }}/docker-compose.yml"
+      shell: "grep -q 'container_name: {{ t4c_container_mariadb }}' \"{{ deploy_dir }}/docker-compose.yml\""
       register: compose_names_patched
       changed_when: false
       failed_when: false
@@ -703,7 +703,7 @@
       when: compose_up.rc | default(1) != 0
 
     - name: Wait for t4c-stack-server container (boot WDA may take minutes)
-      shell: docker ps --filter "name={{ t4c_container_server }}" --filter "status=running" -q | grep -q .
+      shell: "docker ps --filter name={{ t4c_container_server }} --filter status=running -q | grep -q ."
       register: t4c_up
       retries: 30
       delay: 10
