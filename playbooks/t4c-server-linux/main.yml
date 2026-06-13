@@ -53,6 +53,24 @@
         state: touch
         mode: "0644"
 
+    - name: Detect Ansible version capabilities
+      set_fact:
+        ansible_use_replace_module: >-
+          {{
+            (ansible_version.major | int) > 2
+            or (
+              (ansible_version.major | int) == 2
+              and (ansible_version.minor | int) >= 7
+            )
+          }}
+
+    - name: Show Ansible version and patch strategy
+      debug:
+        msg: >-
+          Ansible {{ ansible_version.full }}
+          — patches fichiers via
+          {{ 'module replace' if ansible_use_replace_module else 'lineinfile/python (legacy < 2.7)' }}
+
     - name: Assert supported OS family
       assert:
         that:
@@ -545,7 +563,7 @@
       changed_when: false
       failed_when: false
 
-    - name: Patch docker-compose.yml with fixed container names
+    - name: Patch docker-compose.yml mariadb container name (replace, Ansible 2.7+)
       replace:
         path: "{{ deploy_dir }}/docker-compose.yml"
         regexp: '(?m)^  mariadb:\n    image: mariadb:11'
@@ -553,9 +571,11 @@
           mariadb:
             container_name: {{ t4c_container_mariadb }}
             image: mariadb:11
-      when: compose_names_patched.rc != 0
+      when:
+        - ansible_use_replace_module | bool
+        - compose_names_patched.rc != 0
 
-    - name: Patch docker-compose.yml t4cserver fixed container name
+    - name: Patch docker-compose.yml t4cserver container name (replace, Ansible 2.7+)
       replace:
         path: "{{ deploy_dir }}/docker-compose.yml"
         regexp: '(?m)^  t4cserver:\n    build:'
@@ -563,7 +583,27 @@
           t4cserver:
             container_name: {{ t4c_container_server }}
             build:
-      when: compose_names_patched.rc != 0
+      when:
+        - ansible_use_replace_module | bool
+        - compose_names_patched.rc != 0
+
+    - name: Patch docker-compose.yml mariadb container name (lineinfile, Ansible legacy)
+      lineinfile:
+        path: "{{ deploy_dir }}/docker-compose.yml"
+        insertafter: '^  mariadb:$'
+        line: "    container_name: {{ t4c_container_mariadb }}"
+      when:
+        - not ansible_use_replace_module | bool
+        - compose_names_patched.rc != 0
+
+    - name: Patch docker-compose.yml t4cserver container name (lineinfile, Ansible legacy)
+      lineinfile:
+        path: "{{ deploy_dir }}/docker-compose.yml"
+        insertafter: '^  t4cserver:$'
+        line: "    container_name: {{ t4c_container_server }}"
+      when:
+        - not ansible_use_replace_module | bool
+        - compose_names_patched.rc != 0
 
     - name: Write docker compose .env
       copy:
@@ -601,7 +641,7 @@
       changed_when: false
       failed_when: false
 
-    - name: Patch Arch Dockerfile pacman init (Docker 18 / fresh Arch base)
+    - name: Patch Arch Dockerfile pacman init (replace, Ansible 2.7+)
       replace:
         path: "{{ deploy_dir }}/docker/Dockerfile"
         regexp: '^RUN pacman -Sy --noconfirm \\$'
@@ -613,7 +653,37 @@
            && pacman -Su --noconfirm \
            && pacman -Sy --noconfirm \
         replace_all: yes
-      when: dockerfile_pacman_patched.rc != 0
+      when:
+        - ansible_use_replace_module | bool
+        - dockerfile_pacman_patched.rc != 0
+
+    - name: Patch Arch Dockerfile pacman init (python, Ansible legacy)
+      shell: |
+        python3 <<'PY'
+        import pathlib
+        import sys
+        p = pathlib.Path("{{ deploy_dir }}/docker/Dockerfile")
+        text = p.read_text()
+        if "pacman-key --init" in text:
+            sys.exit(0)
+        old = "RUN pacman -Sy --noconfirm \\"
+        new = (
+            "RUN mkdir -p /var/lib/pacman/sync /var/lib/pacman/local \\\n"
+            " && pacman-key --init \\\n"
+            " && pacman-key --populate archlinux \\\n"
+            " && pacman -Sy --noconfirm archlinux-keyring \\\n"
+            " && pacman -Su --noconfirm \\\n"
+            " && pacman -Sy --noconfirm \\"
+        )
+        if old not in text:
+            sys.exit(1)
+        p.write_text(text.replace(old, new))
+        PY
+      args:
+        executable: /bin/bash
+      when:
+        - not ansible_use_replace_module | bool
+        - dockerfile_pacman_patched.rc != 0
 
     - name: Purge orphan t4c containers from failed runs
       shell: |
