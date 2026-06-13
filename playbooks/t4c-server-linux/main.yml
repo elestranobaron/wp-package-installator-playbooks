@@ -822,14 +822,7 @@
         - docker_legacy | default(no)
         - dockerfile_legacy_ok.rc | default(1) != 0
 
-    - name: Check Arch Dockerfile pacman patch already applied
-      shell: grep -q 'pacman-key --init' "{{ deploy_dir }}/docker/Dockerfile"
-      register: dockerfile_pacman_patched
-      changed_when: false
-      failed_when: false
-      when: not (docker_legacy | default(no))
-
-    - name: Install Dockerfile pacman patch script (Docker 20+)
+    - name: Install Arch Dockerfile patch script (Docker 20+)
       copy:
         dest: /tmp/t4c-patch-dockerfile.py
         mode: "0755"
@@ -837,36 +830,72 @@
           #!/usr/bin/env python3
           import pathlib
           import sys
+
           p = pathlib.Path("{{ deploy_dir }}/docker/Dockerfile")
           text = p.read_text()
-          if "pacman-key --init" in text:
-              sys.exit(0)
-          old = "RUN pacman -Sy --noconfirm \\"
-          new = (
-              "RUN mkdir -p /var/lib/pacman/sync /var/lib/pacman/local \\\n"
-              " && pacman-key --init \\\n"
-              " && pacman-key --populate archlinux \\\n"
-              " && pacman -Sy --noconfirm archlinux-keyring \\\n"
-              " && pacman -Su --noconfirm \\\n"
-              " && pacman -Sy --noconfirm \\"
-          )
-          if old not in text:
-              sys.stderr.write("pattern pacman introuvable dans Dockerfile\n")
-              sys.exit(1)
-          p.write_text(text.replace(old, new))
-          sys.exit(0)
-      when:
-        - not (docker_legacy | default(no))
-        - dockerfile_pacman_patched.rc | default(1) != 0
 
-    - name: Patch Arch Dockerfile pacman init (python3, Docker 20+)
+          if "pacman-key --init" not in text:
+              old = "RUN pacman -Sy --noconfirm \\"
+              new = (
+                  "RUN mkdir -p /var/lib/pacman/sync /var/lib/pacman/local \\\n"
+                  " && pacman-key --init \\\n"
+                  " && pacman-key --populate archlinux \\\n"
+                  " && pacman -Sy --noconfirm archlinux-keyring \\\n"
+                  " && pacman -Su --noconfirm \\\n"
+                  " && pacman -Sy --noconfirm \\"
+              )
+              if old not in text:
+                  sys.stderr.write("pattern pacman introuvable dans Dockerfile\n")
+                  sys.exit(1)
+              text = text.replace(old, new)
+
+          if "downloads.mariadb.com/Connectors/odbc" not in text:
+              text = text.replace("    mariadb-connector-odbc \\\n", "")
+              marker = "FROM archlinux:latest AS runtime"
+              idx = text.find(marker)
+              if idx < 0:
+                  sys.stderr.write("stage runtime introuvable dans Dockerfile\n")
+                  sys.exit(1)
+              before = text[:idx]
+              after = text[idx:]
+              runtime_head = after.split("WORKDIR /srv/t4c", 1)[0]
+              runtime_tail = "WORKDIR /srv/t4c" + after.split("WORKDIR /srv/t4c", 1)[1]
+              if "    curl \\" not in runtime_head:
+                  runtime_head = runtime_head.replace(
+                      "    gettext \\",
+                      "    curl \\\n    gettext \\",
+                      1,
+                  )
+              odbc_run = (
+                  "\nRUN curl -fsSL -o /tmp/mco.tgz "
+                  "\"https://downloads.mariadb.com/Connectors/odbc/connector-odbc-3.2.7/"
+                  "mariadb-connector-odbc-3.2.7-linux-x86_64.tar.gz\" \\\n"
+                  " && mkdir -p /tmp/mco \\\n"
+                  " && tar -xzf /tmp/mco.tgz -C /tmp/mco \\\n"
+                  " && MAODBC=\"$(find /tmp/mco -name libmaodbc.so | head -1)\" \\\n"
+                  " && test -n \"$MAODBC\" \\\n"
+                  " && install -m 755 \"$MAODBC\" /usr/lib/libmaodbc.so \\\n"
+                  " && rm -rf /tmp/mco.tgz /tmp/mco\n"
+              )
+              scc = "&& pacman -Scc --noconfirm"
+              pos = runtime_head.find(scc)
+              if pos < 0:
+                  sys.stderr.write("pacman -Scc introuvable dans stage runtime\n")
+                  sys.exit(1)
+              end = runtime_head.find("\n", pos)
+              runtime_head = runtime_head[: end + 1] + odbc_run + runtime_head[end + 1 :]
+              text = before + runtime_head + runtime_tail
+
+          p.write_text(text)
+          sys.exit(0)
+      when: not (docker_legacy | default(no))
+
+    - name: Patch Arch Dockerfile (pacman-key + MariaDB ODBC)
       shell: python3 /tmp/t4c-patch-dockerfile.py
-      register: dockerfile_pacman_patch_run
-      changed_when: dockerfile_pacman_patch_run.rc == 0
-      failed_when: dockerfile_pacman_patch_run.rc != 0
-      when:
-        - not (docker_legacy | default(no))
-        - dockerfile_pacman_patched.rc | default(1) != 0
+      register: dockerfile_patch_run
+      changed_when: dockerfile_patch_run.rc == 0
+      failed_when: dockerfile_patch_run.rc != 0
+      when: not (docker_legacy | default(no))
 
     - name: Purge orphan t4c containers from failed runs
       shell: |
@@ -934,7 +963,7 @@
       fail:
         msg: |
           Build image t4cserver echoue (rc={{ compose_build.rc }}).
-          Docker legacy={{ docker_legacy | default(no) }} — compile native hote + image runtime sans apt
+          Docker legacy={{ docker_legacy | default(no) }}
 
           Log : /tmp/t4c-docker-build.log
           Dernieres lignes :
