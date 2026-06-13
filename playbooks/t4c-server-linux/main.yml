@@ -30,7 +30,6 @@
     compose_project_name: t4cstack
     t4c_container_mariadb: t4c-stack-mariadb
     t4c_container_server: t4c-stack-server
-    docker_legacy_base_image: "ubuntu:22.04"
 
   tasks:
     - name: Refuse concurrent deploy if lock is recent
@@ -626,62 +625,146 @@
         docker_legacy: no
       when: docker_legacy_raw.stdout | default('0') | int == 0
 
-    - name: Check legacy Ubuntu Dockerfile already applied
-      shell: grep -q 'SDL3 compile from source' "{{ deploy_dir }}/docker/Dockerfile"
+    - name: Check legacy native-build Dockerfile already applied
+      shell: grep -q 'T4C legacy native build' "{{ deploy_dir }}/docker/Dockerfile"
       register: dockerfile_legacy_ok
       changed_when: false
       failed_when: false
       when: docker_legacy | default(no)
 
-    - name: Install Ubuntu Dockerfile for Docker 18 (remplace Arch/pacman)
+    - name: "[legacy] Install native build dependencies on host"
+      apt:
+        name:
+          - build-essential
+          - cmake
+          - pkg-config
+          - git
+          - libssl-dev
+          - unixodbc-dev
+          - libmariadb-dev
+          - libasound2-dev
+          - libpulse-dev
+          - libx11-dev
+          - libxext-dev
+          - libxrandr-dev
+          - libxcursor-dev
+          - libxinerama-dev
+          - libxi-dev
+          - libdbus-1-dev
+          - libudev-dev
+          - libgles2-mesa-dev
+          - libegl1-mesa-dev
+          - libdrm-dev
+          - libgbm-dev
+          - gettext-base
+        state: present
+        update_cache: no
+      failed_when: false
+      when: docker_legacy | default(no)
+
+    - name: "[legacy] Install SDL3 build script on host"
+      copy:
+        dest: /tmp/t4c-build-sdl3.sh
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          set -euo pipefail
+          if ls /usr/local/lib/libSDL3.so* >/dev/null 2>&1; then
+            exit 0
+          fi
+          git clone --depth 1 --branch release-3.2.8 https://github.com/libsdl-org/SDL.git /tmp/SDL
+          cmake -S /tmp/SDL -B /tmp/SDL/build -DCMAKE_BUILD_TYPE=Release -DSDL_WAYLAND=OFF
+          cmake --build /tmp/SDL/build -j"$(nproc)"
+          cmake --install /tmp/SDL/build
+          rm -rf /tmp/SDL
+      when: docker_legacy | default(no)
+
+    - name: "[legacy] Build SDL3 on host if missing"
+      shell: /tmp/t4c-build-sdl3.sh >> /tmp/t4c-sdl3-build.log 2>&1
+      args:
+        executable: /bin/bash
+      register: sdl3_host_build
+      failed_when: false
+      when: docker_legacy | default(no)
+
+    - name: "[legacy] Verify SDL3 installed on host"
+      shell: ls /usr/local/lib/libSDL3.so* >/dev/null 2>&1
+      register: sdl3_on_host
+      changed_when: false
+      failed_when: false
+      when: docker_legacy | default(no)
+
+    - name: "[legacy] Fail if SDL3 missing on host"
+      fail:
+        msg: |
+          SDL3 introuvable sur l'hote apres build (/usr/local/lib/libSDL3.so*).
+          Log build SDL3 : /tmp/t4c-sdl3-build.log
+      when:
+        - docker_legacy | default(no)
+        - sdl3_on_host.rc | default(1) != 0
+
+    - name: "[legacy] Build T4CServer natively on host"
+      shell: |
+        cd "{{ deploy_dir }}"
+        cmake -S . -B build -DCMAKE_CXX_STANDARD=17 -DCMAKE_BUILD_TYPE=Release
+        cmake --build build -j"$(nproc)"
+      register: t4c_native_build
+      failed_when: false
+      when: docker_legacy | default(no)
+
+    - name: "[legacy] Fail if native T4CServer build failed"
+      fail:
+        msg: |
+          Compilation native T4CServer echouee (rc={{ t4c_native_build.rc }}).
+          Verifiez les deps sur {{ ansible_distribution }} {{ ansible_distribution_version }}.
+      when:
+        - docker_legacy | default(no)
+        - t4c_native_build.rc | default(1) != 0
+
+    - name: "[legacy] Stage binary and libs for docker runtime image"
+      shell: |
+        set -euo pipefail
+        ST="{{ deploy_dir }}/docker/staging"
+        BIN="{{ deploy_dir }}/build/T4CServer"
+        rm -rf "$ST"
+        mkdir -p "$ST/lib" "$ST/bin"
+        test -x "$BIN"
+        cp "$BIN" "$ST/T4CServer"
+        copy_libs() {
+          ldd "$1" 2>/dev/null | awk '/=> \// {print $3}' | sort -u | while read -r lib; do
+            [ -f "$lib" ] || continue
+            cp -a "$lib" "$ST/lib/"
+          done
+        }
+        copy_libs "$BIN"
+        for f in /usr/local/lib/libSDL3.so*; do
+          [ -e "$f" ] && cp -a "$f" "$ST/lib/"
+        done
+        if command -v envsubst >/dev/null 2>&1; then
+          cp "$(command -v envsubst)" "$ST/bin/envsubst"
+          copy_libs "$ST/bin/envsubst"
+        fi
+      args:
+        executable: /bin/bash
+      when: docker_legacy | default(no)
+
+    - name: "[legacy] Install runtime-only Dockerfile (no apt in docker — Docker 18)"
       copy:
         dest: "{{ deploy_dir }}/docker/Dockerfile"
         content: |
-          # T4C legacy Docker 18 — Ubuntu 22.04 (24.04 GPG casse sur Docker 18)
-          FROM {{ docker_legacy_base_image }} AS builder
+          # T4C legacy native build — binaire compile sur l'hote, image runtime sans apt
+          FROM debian:buster-slim
 
-          ENV DEBIAN_FRONTEND=noninteractive
-          RUN apt-get update && apt-get install -y --no-install-recommends \
-              build-essential cmake pkg-config git ca-certificates \
-              libasound2-dev libpulse-dev libx11-dev libxext-dev libxrandr-dev \
-              libxcursor-dev libxinerama-dev libxi-dev libxss-dev libxxf86vm-dev \
-              libdbus-1-dev libudev-dev libgles2-mesa-dev libegl1-mesa-dev \
-              libdrm-dev libgbm-dev libwayland-dev libdecor-0-dev \
-              libssl-dev unixodbc-dev libmariadb-dev \
-            && rm -rf /var/lib/apt/lists/*
-
-          # SDL3 compile from source (absent des depots jammy)
-          RUN git clone --depth 1 --branch release-3.2.8 https://github.com/libsdl-org/SDL.git /tmp/SDL \
-            && cmake -S /tmp/SDL -B /tmp/SDL/build -DCMAKE_BUILD_TYPE=Release \
-            && cmake --build /tmp/SDL/build -j"$(nproc)" \
-            && cmake --install /tmp/SDL/build \
-            && rm -rf /tmp/SDL
-
-          WORKDIR /src
-          COPY . .
-
-          RUN cmake -S . -B build -DCMAKE_CXX_STANDARD=17 -DCMAKE_BUILD_TYPE=Release \
-            && cmake --build build -j"$(nproc)"
-
-          FROM {{ docker_legacy_base_image }} AS runtime
-
-          ENV DEBIAN_FRONTEND=noninteractive
-          RUN apt-get update && apt-get install -y --no-install-recommends \
-              libssl3 unixodbc mariadb-connector-odbc gettext-base ca-certificates \
-              libasound2 libpulse0 libx11-6 libgbm1 libwayland-client0 libdecor-0-0 libxkbcommon0 \
-            && rm -rf /var/lib/apt/lists/*
-
-          COPY --from=builder /usr/local/lib/libSDL3.so* /usr/local/lib/
-          RUN echo /usr/local/lib > /etc/ld.so.conf.d/sdl3.conf && ldconfig
-
-          WORKDIR /srv/t4c
-
-          COPY --from=builder /src/build/T4CServer ./T4CServer
+          COPY docker/staging/lib/ /usr/local/lib/
+          COPY docker/staging/T4CServer /srv/t4c/T4CServer
           COPY docker/odbc/ /opt/t4c-odbc/
           COPY docker/entrypoint.sh /usr/local/bin/t4c-entrypoint.sh
+          COPY docker/staging/bin/envsubst /usr/bin/envsubst
 
-          RUN chmod +x /usr/local/bin/t4c-entrypoint.sh ./T4CServer \
-            && mkdir -p logs WDA /opt/t4c-assets
+          RUN echo /usr/local/lib > /etc/ld.so.conf.d/t4c.conf \
+            && ldconfig \
+            && chmod +x /usr/local/bin/t4c-entrypoint.sh /srv/t4c/T4CServer /usr/bin/envsubst \
+            && mkdir -p /srv/t4c/logs /srv/t4c/WDA /opt/t4c-assets
 
           ENV T4C_APP_DIR=/srv/t4c \
               T4C_ASSETS_DIR=/opt/t4c-assets \
@@ -693,12 +776,6 @@
       when:
         - docker_legacy | default(no)
         - dockerfile_legacy_ok.rc | default(1) != 0
-
-    - name: Pre-pull Ubuntu base for legacy Docker build
-      shell: "docker pull {{ docker_legacy_base_image }}"
-      changed_when: false
-      failed_when: false
-      when: docker_legacy | default(no)
 
     - name: Check Arch Dockerfile pacman patch already applied
       shell: grep -q 'pacman-key --init' "{{ deploy_dir }}/docker/Dockerfile"
@@ -808,7 +885,7 @@
       fail:
         msg: |
           Build image t4cserver echoue (rc={{ compose_build.rc }}).
-          Docker legacy={{ docker_legacy | default(no) }} (base {{ docker_legacy_base_image }} si legacy)
+          Docker legacy={{ docker_legacy | default(no) }} — compile native hote + image runtime sans apt
 
           Log : /tmp/t4c-docker-build.log
           Dernieres lignes :
