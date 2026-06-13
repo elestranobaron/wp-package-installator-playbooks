@@ -631,30 +631,39 @@
       changed_when: false
       failed_when: false
 
+    - name: Install Dockerfile pacman patch script
+      copy:
+        dest: /tmp/t4c-patch-dockerfile.py
+        mode: "0755"
+        content: |
+          #!/usr/bin/env python3
+          import pathlib
+          import sys
+          p = pathlib.Path("{{ deploy_dir }}/docker/Dockerfile")
+          text = p.read_text()
+          if "pacman-key --init" in text:
+              sys.exit(0)
+          old = "RUN pacman -Sy --noconfirm \\"
+          new = (
+              "RUN mkdir -p /var/lib/pacman/sync /var/lib/pacman/local \\\n"
+              " && pacman-key --init \\\n"
+              " && pacman-key --populate archlinux \\\n"
+              " && pacman -Sy --noconfirm archlinux-keyring \\\n"
+              " && pacman -Su --noconfirm \\\n"
+              " && pacman -Sy --noconfirm \\"
+          )
+          if old not in text:
+              sys.stderr.write("pattern pacman introuvable dans Dockerfile\n")
+              sys.exit(1)
+          p.write_text(text.replace(old, new))
+          sys.exit(0)
+      when: dockerfile_pacman_patched.rc != 0
+
     - name: Patch Arch Dockerfile pacman init (python3)
-      shell: |
-        python3 <<'PY'
-        import pathlib
-        import sys
-        p = pathlib.Path("{{ deploy_dir }}/docker/Dockerfile")
-        text = p.read_text()
-        if "pacman-key --init" in text:
-            sys.exit(0)
-        old = "RUN pacman -Sy --noconfirm \\"
-        new = (
-            "RUN mkdir -p /var/lib/pacman/sync /var/lib/pacman/local \\\n"
-            " && pacman-key --init \\\n"
-            " && pacman-key --populate archlinux \\\n"
-            " && pacman -Sy --noconfirm archlinux-keyring \\\n"
-            " && pacman -Su --noconfirm \\\n"
-            " && pacman -Sy --noconfirm \\"
-        )
-        if old not in text:
-            sys.exit(1)
-        p.write_text(text.replace(old, new))
-        PY
-      args:
-        executable: /bin/bash
+      shell: python3 /tmp/t4c-patch-dockerfile.py
+      register: dockerfile_pacman_patch_run
+      changed_when: dockerfile_pacman_patch_run.rc == 0
+      failed_when: dockerfile_pacman_patch_run.rc != 0
       when: dockerfile_pacman_patched.rc != 0
 
     - name: Purge orphan t4c containers from failed runs
