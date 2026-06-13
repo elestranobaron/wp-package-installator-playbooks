@@ -885,8 +885,11 @@
         content: |
           .git
           .gitignore
+          build/
+          build_backup_*/
+          .deps/
           docker/runtime
-          .deps
+          docker/staging/
           **/logs
           .env
 
