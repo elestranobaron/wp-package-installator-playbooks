@@ -30,6 +30,7 @@
     compose_project_name: t4cstack
     t4c_container_mariadb: t4c-stack-mariadb
     t4c_container_server: t4c-stack-server
+    archlinux_legacy_base: "archlinux:base-20220102.0.118459"
 
   tasks:
     - name: Refuse concurrent deploy if lock is recent
@@ -625,13 +626,60 @@
         docker_legacy: no
       when: docker_legacy_raw.stdout | default('0') | int == 0
 
+    - name: Check Dockerfile legacy Arch pin already applied
+      shell: "grep -q '{{ archlinux_legacy_base }}' \"{{ deploy_dir }}/docker/Dockerfile\""
+      register: dockerfile_legacy_patched
+      changed_when: false
+      failed_when: false
+      when: docker_legacy | default(no)
+
     - name: Check Arch Dockerfile pacman patch already applied
       shell: grep -q 'pacman-key --init' "{{ deploy_dir }}/docker/Dockerfile"
       register: dockerfile_pacman_patched
       changed_when: false
       failed_when: false
+      when: not (docker_legacy | default(no))
 
-    - name: Install Dockerfile pacman patch script
+    - name: Install Dockerfile legacy Arch pin script (Docker 18)
+      copy:
+        dest: /tmp/t4c-patch-dockerfile-legacy.py
+        mode: "0755"
+        content: |
+          #!/usr/bin/env python3
+          import pathlib
+          import sys
+          base = "{{ archlinux_legacy_base }}"
+          p = pathlib.Path("{{ deploy_dir }}/docker/Dockerfile")
+          text = p.read_text()
+          if base in text:
+              sys.exit(0)
+          if "FROM archlinux:latest" not in text:
+              sys.stderr.write("FROM archlinux:latest introuvable dans Dockerfile\n")
+              sys.exit(1)
+          text = text.replace("FROM archlinux:latest AS builder", "FROM %s AS builder" % base)
+          text = text.replace("FROM archlinux:latest AS runtime", "FROM %s AS runtime" % base)
+          p.write_text(text)
+          sys.exit(0)
+      when:
+        - docker_legacy | default(no)
+        - dockerfile_legacy_patched.rc | default(1) != 0
+
+    - name: Pin Arch base image in Dockerfile (Docker 18)
+      shell: python3 /tmp/t4c-patch-dockerfile-legacy.py
+      register: dockerfile_legacy_patch_run
+      changed_when: dockerfile_legacy_patch_run.rc == 0
+      failed_when: dockerfile_legacy_patch_run.rc != 0
+      when:
+        - docker_legacy | default(no)
+        - dockerfile_legacy_patched.rc | default(1) != 0
+
+    - name: Pre-pull pinned Arch base for legacy Docker build
+      shell: "docker pull {{ archlinux_legacy_base }}"
+      changed_when: false
+      failed_when: false
+      when: docker_legacy | default(no)
+
+    - name: Install Dockerfile pacman patch script (Docker 20+)
       copy:
         dest: /tmp/t4c-patch-dockerfile.py
         mode: "0755"
@@ -657,14 +705,18 @@
               sys.exit(1)
           p.write_text(text.replace(old, new))
           sys.exit(0)
-      when: dockerfile_pacman_patched.rc != 0
+      when:
+        - not (docker_legacy | default(no))
+        - dockerfile_pacman_patched.rc | default(1) != 0
 
-    - name: Patch Arch Dockerfile pacman init (python3)
+    - name: Patch Arch Dockerfile pacman init (python3, Docker 20+)
       shell: python3 /tmp/t4c-patch-dockerfile.py
       register: dockerfile_pacman_patch_run
       changed_when: dockerfile_pacman_patch_run.rc == 0
       failed_when: dockerfile_pacman_patch_run.rc != 0
-      when: dockerfile_pacman_patched.rc != 0
+      when:
+        - not (docker_legacy | default(no))
+        - dockerfile_pacman_patched.rc | default(1) != 0
 
     - name: Purge orphan t4c containers from failed runs
       shell: |
@@ -733,7 +785,7 @@
           Dernieres lignes :
           {{ docker_build_log_tail.stdout | default('') }}
 
-          Si erreur pacman/alpm : verifier le patch dans docker/Dockerfile (pacman-key).
+          Si erreur pacman/alpm : Docker 18 utilise {{ archlinux_legacy_base }} (pas latest).
           Log complet : tail -100 /tmp/t4c-docker-build.log
           Build manuel : cd {{ deploy_dir }} && {{ docker_compose_cmd }} -p {{ compose_project_name }} build t4cserver
       when: compose_build.rc | default(1) != 0
