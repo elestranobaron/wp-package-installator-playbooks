@@ -1,7 +1,7 @@
 ---
 # T4C Server Linux — WP DevOps Dashboard / Package Installator
-# Ansible tourne EN LOCAL sur le serveur deja connecte en SSH (connection: local).
-# Pas de handlers, pas de FQCN ansible.builtin.* (Ansible minimal sur cible).
+# Compatible Ansible 2.2+ : pas de FQCN, pas de loop, pas de replace, pas de lookup pipe.
+# Modules : shell, copy, file, stat, lineinfile, git, apt, debug, fail, set_fact, systemd, uri.
 - name: Deploy T4C Server Linux (Docker)
   hosts: localhost
   connection: local
@@ -53,29 +53,14 @@
         state: touch
         mode: "0644"
 
-    - name: Detect Ansible version capabilities
-      set_fact:
-        ansible_use_replace_module: >-
-          {{
-            (ansible_version.major | int) > 2
-            or (
-              (ansible_version.major | int) == 2
-              and (ansible_version.minor | int) >= 7
-            )
-          }}
-
-    - name: Show Ansible version and patch strategy
+    - name: Show Ansible version
       debug:
-        msg: >-
-          Ansible {{ ansible_version.full }}
-          — patches fichiers via
-          {{ 'module replace' if ansible_use_replace_module else 'lineinfile/python (legacy < 2.7)' }}
+        msg: "Ansible {{ ansible_version.full }} — playbook compatible 2.2+ (shell/copy/lineinfile/python3)"
 
-    - name: Assert supported OS family
-      assert:
-        that:
-          - ansible_os_family in ["Debian", "RedHat", "Archlinux", "Suse"]
-        fail_msg: "OS non supporte. Distros : Debian/Ubuntu, Fedora/RHEL, Arch, openSUSE."
+    - name: Fail on unsupported OS family
+      fail:
+        msg: "OS non supporte. Distros : Debian/Ubuntu, Fedora/RHEL, Arch, openSUSE."
+      when: ansible_os_family not in ["Debian", "RedHat", "Archlinux", "Suse"]
 
     # Credentials: dashboard (extra-vars) > .env existant > defaults docker-compose
     - name: Check for existing deployment .env
@@ -103,26 +88,8 @@
 
     - name: Resolve DB credentials for idempotent re-runs
       set_fact:
-        db_password: >-
-          {{
-            db_password
-            if (db_password | default('') | length > 0)
-            else (
-              env_db_password.stdout | trim
-              if (env_db_password.stdout | default('') | trim | length > 0)
-              else db_password_default
-            )
-          }}
-        db_root_password: >-
-          {{
-            db_root_password
-            if (db_root_password | default('') | length > 0)
-            else (
-              env_db_root_password.stdout | trim
-              if (env_db_root_password.stdout | default('') | trim | length > 0)
-              else db_root_password_default
-            )
-          }}
+        db_password: "{{ db_password if (db_password | default('') | length > 0) else (env_db_password.stdout | default('') if (env_db_password.stdout | default('') | length > 0) else db_password_default) }}"
+        db_root_password: "{{ db_root_password if (db_root_password | default('') | length > 0) else (env_db_root_password.stdout | default('') if (env_db_root_password.stdout | default('') | length > 0) else db_root_password_default) }}"
 
     - name: Detect Docker stack (CLI, daemon, compose v2 plugin or v1 binary)
       shell: |
@@ -136,7 +103,7 @@
           echo "$COMPOSE_BIN"
           exit 0
         fi
-        echo "ERR: ni « docker compose » (v2) ni « docker-compose » (v1) trouve"
+        echo "ERR: ni docker compose (v2) ni docker-compose (v1) trouve"
         exit 1
       register: docker_detect
       changed_when: false
@@ -144,161 +111,186 @@
 
     - name: Set docker stack ready flag and compose command
       set_fact:
-        docker_stack_ready: "{{ docker_detect.rc == 0 }}"
-        docker_compose_cmd: "{{ docker_detect.stdout | trim }}"
+        docker_stack_ready: yes
+        docker_compose_cmd: "{{ docker_detect.stdout }}"
       when: docker_detect.rc == 0
 
     - name: Set docker stack missing flag
       set_fact:
-        docker_stack_ready: false
+        docker_stack_ready: no
         docker_compose_cmd: ""
       when: docker_detect.rc != 0
 
     - name: Note docker detection when already OK
       debug:
-        msg: >-
-          Docker OK sur {{ ansible_distribution }} {{ ansible_distribution_version }}
-          — compose={{ docker_compose_cmd }} — installation sautee
-      when: docker_stack_ready | bool
+        msg: "Docker OK sur {{ ansible_distribution }} {{ ansible_distribution_version }} — compose={{ docker_compose_cmd }} — installation sautee"
+      when: docker_stack_ready | default(no)
 
     - name: Note docker detection when missing
       debug:
-        msg: >-
-          Docker/Compose absent sur {{ ansible_distribution }} {{ ansible_distribution_version }}.
-          {{ docker_detect.stdout | default('') | trim }}
-          — tentative installation via paquets distro (docker.io) puis Docker.com si recent.
-      when: not docker_stack_ready | bool
+        msg: "Docker/Compose absent sur {{ ansible_distribution }} {{ ansible_distribution_version }}. {{ docker_detect.stdout | default('') }} — tentative installation paquets distro."
+      when: not (docker_stack_ready | default(no))
 
-    - name: Ensure git and rsync are available
-      package:
+    - name: "[Debian] Ensure git and rsync"
+      apt:
         name:
           - git
           - rsync
         state: present
+        update_cache: no
       failed_when: false
+      when: ansible_os_family == "Debian"
 
-    - name: Install Docker stack when missing
-      when: not docker_stack_ready | bool
-      block:
-        - name: "[Debian] Install docker.io + docker-compose from distro repos"
-          apt:
-            name:
-              - docker.io
-              - docker-compose
-              - git
-              - rsync
-            state: present
-            update_cache: no
-          failed_when: false
-          when: ansible_os_family == "Debian"
+    - name: "[RedHat] Ensure git and rsync"
+      shell: dnf install -y git rsync || yum install -y git rsync
+      changed_when: false
+      failed_when: false
+      when: ansible_os_family == "RedHat"
 
-        - name: Re-detect Docker after distro packages (Debian)
-          shell: |
-            docker info >/dev/null 2>&1 || exit 1
-            if docker compose version >/dev/null 2>&1; then echo "docker compose"; exit 0; fi
-            if COMPOSE_BIN="$(command -v docker-compose)" && "$COMPOSE_BIN" --version >/dev/null 2>&1; then echo "$COMPOSE_BIN"; exit 0; fi
-            exit 1
-          register: docker_redetect_debian
-          changed_when: false
-          failed_when: false
-          when: ansible_os_family == "Debian"
+    - name: "[Arch] Ensure git and rsync"
+      shell: pacman -Sy --noconfirm git rsync
+      changed_when: false
+      failed_when: false
+      when: ansible_os_family == "Archlinux"
 
-        - name: Mark stack ready after distro docker.io install
-          set_fact:
-            docker_stack_ready: true
-            docker_compose_cmd: "{{ docker_redetect_debian.stdout | trim }}"
-          when:
-            - ansible_os_family == "Debian"
-            - docker_redetect_debian.rc | default(1) == 0
+    - name: "[Suse] Ensure git and rsync"
+      shell: zypper -n install git rsync
+      changed_when: false
+      failed_when: false
+      when: ansible_os_family == "Suse"
 
-        - name: "[Debian] Refresh apt cache (best effort, Docker.com fallback)"
-          apt:
-            update_cache: yes
-            cache_valid_time: 3600
-          failed_when: false
-          when:
-            - ansible_os_family == "Debian"
-            - not docker_stack_ready | bool
-            - ansible_distribution_major_version | int >= 11
+    - name: "[Debian] Install docker.io + docker-compose from distro repos"
+      apt:
+        name:
+          - docker.io
+          - docker-compose
+        state: present
+        update_cache: no
+      failed_when: false
+      when:
+        - not (docker_stack_ready | default(no))
+        - ansible_os_family == "Debian"
 
-        - name: "[Debian] Install from Docker.com (Debian 11+ only, best effort)"
-          block:
-            - name: "[Debian] Install Docker prerequisites"
-              apt:
-                name:
-                  - ca-certificates
-                  - curl
-                  - gnupg
-                  - lsb-release
-                state: present
-                update_cache: no
-              failed_when: false
+    - name: Re-detect Docker after distro packages (Debian)
+      shell: |
+        docker info >/dev/null 2>&1 || exit 1
+        if docker compose version >/dev/null 2>&1; then echo "docker compose"; exit 0; fi
+        if COMPOSE_BIN="$(command -v docker-compose)" && "$COMPOSE_BIN" --version >/dev/null 2>&1; then echo "$COMPOSE_BIN"; exit 0; fi
+        exit 1
+      register: docker_redetect_debian
+      changed_when: false
+      failed_when: false
+      when:
+        - not (docker_stack_ready | default(no))
+        - ansible_os_family == "Debian"
 
-            - name: "[Debian] Add Docker GPG key"
-              shell: |
-                install -m 0755 -d /etc/apt/keyrings
-                curl -fsSL https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg \
-                  | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-                chmod a+r /etc/apt/keyrings/docker.gpg
-              args:
-                creates: /etc/apt/keyrings/docker.gpg
+    - name: Mark stack ready after distro docker.io install
+      set_fact:
+        docker_stack_ready: yes
+        docker_compose_cmd: "{{ docker_redetect_debian.stdout }}"
+      when:
+        - ansible_os_family == "Debian"
+        - docker_redetect_debian.rc | default(1) == 0
 
-            - name: "[Debian] Add Docker APT repository"
-              shell: |
-                echo \
-                  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-                  https://download.docker.com/linux/{{ ansible_distribution | lower }} \
-                  $(. /etc/os-release && echo "${VERSION_CODENAME:-$VERSION_ID}") stable" \
-                  > /etc/apt/sources.list.d/docker.list
-              args:
-                creates: /etc/apt/sources.list.d/docker.list
+    - name: "[Debian 11+] Refresh apt cache (best effort)"
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      failed_when: false
+      when:
+        - ansible_os_family == "Debian"
+        - not (docker_stack_ready | default(no))
+        - ansible_distribution_major_version | int >= 11
 
-            - name: "[Debian] Install Docker Engine from Docker.com"
-              apt:
-                name:
-                  - docker-ce
-                  - docker-ce-cli
-                  - containerd.io
-                  - docker-buildx-plugin
-                  - docker-compose-plugin
-                state: present
-                update_cache: no
-              failed_when: false
-          when:
-            - ansible_os_family == "Debian"
-            - not docker_stack_ready | bool
-            - ansible_distribution_major_version | int >= 11
+    - name: "[Debian 11+] Install Docker prerequisites"
+      apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+        update_cache: no
+      failed_when: false
+      when:
+        - ansible_os_family == "Debian"
+        - not (docker_stack_ready | default(no))
+        - ansible_distribution_major_version | int >= 11
 
-        - name: "[RedHat] Add Docker repository"
-          shell: |
-            dnf config-manager --add-repo \
-              https://download.docker.com/linux/fedora/docker-ce.repo
-          args:
-            creates: /etc/yum.repos.d/docker-ce.repo
-          when: ansible_os_family == "RedHat"
+    - name: "[Debian 11+] Add Docker GPG key"
+      shell: |
+        install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg \
+          | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+        chmod a+r /etc/apt/keyrings/docker.gpg
+      args:
+        creates: /etc/apt/keyrings/docker.gpg
+      when:
+        - ansible_os_family == "Debian"
+        - not (docker_stack_ready | default(no))
+        - ansible_distribution_major_version | int >= 11
 
-        - name: "[RedHat] Install Docker Engine"
-          dnf:
-            name:
-              - docker-ce
-              - docker-ce-cli
-              - containerd.io
-              - docker-compose-plugin
-            state: present
-          failed_when: false
-          when: ansible_os_family == "RedHat"
+    - name: "[Debian 11+] Add Docker APT repository"
+      shell: |
+        echo \
+          "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+          https://download.docker.com/linux/{{ ansible_distribution | lower }} \
+          $(. /etc/os-release && echo "${VERSION_CODENAME:-$VERSION_ID}") stable" \
+          > /etc/apt/sources.list.d/docker.list
+      args:
+        creates: /etc/apt/sources.list.d/docker.list
+      when:
+        - ansible_os_family == "Debian"
+        - not (docker_stack_ready | default(no))
+        - ansible_distribution_major_version | int >= 11
 
-        - name: "[Arch] Install Docker"
-          shell: pacman -Sy --noconfirm docker docker-compose
-          args:
-            creates: /usr/bin/docker
-          when: ansible_os_family == "Archlinux"
+    - name: "[Debian 11+] Install Docker Engine from Docker.com"
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+        update_cache: no
+      failed_when: false
+      when:
+        - ansible_os_family == "Debian"
+        - not (docker_stack_ready | default(no))
+        - ansible_distribution_major_version | int >= 11
 
-        - name: "[Suse] Install Docker"
-          shell: zypper -n install docker docker-compose
-          args:
-            creates: /usr/bin/docker
-          when: ansible_os_family == "Suse"
+    - name: "[RedHat] Add Docker repository"
+      shell: dnf config-manager --add-repo https://download.docker.com/linux/fedora/docker-ce.repo
+      args:
+        creates: /etc/yum.repos.d/docker-ce.repo
+      when:
+        - not (docker_stack_ready | default(no))
+        - ansible_os_family == "RedHat"
+
+    - name: "[RedHat] Install Docker Engine"
+      shell: dnf install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+      changed_when: false
+      failed_when: false
+      when:
+        - not (docker_stack_ready | default(no))
+        - ansible_os_family == "RedHat"
+
+    - name: "[Arch] Install Docker"
+      shell: pacman -Sy --noconfirm docker docker-compose
+      args:
+        creates: /usr/bin/docker
+      when:
+        - not (docker_stack_ready | default(no))
+        - ansible_os_family == "Archlinux"
+
+    - name: "[Suse] Install Docker"
+      shell: zypper -n install docker docker-compose
+      args:
+        creates: /usr/bin/docker
+      when:
+        - not (docker_stack_ready | default(no))
+        - ansible_os_family == "Suse"
 
     - name: Final Docker stack detection
       shell: |
@@ -312,8 +304,8 @@
 
     - name: Apply final docker compose command
       set_fact:
-        docker_stack_ready: "{{ docker_detect_final.rc == 0 }}"
-        docker_compose_cmd: "{{ docker_detect_final.stdout | trim }}"
+        docker_stack_ready: yes
+        docker_compose_cmd: "{{ docker_detect_final.stdout }}"
       when: docker_detect_final.rc == 0
 
     - name: Fail if docker compose still unavailable
@@ -321,9 +313,9 @@
         msg: >
           Docker Compose introuvable sur {{ ansible_distribution }} {{ ansible_distribution_version }}.
           Verifiez : docker --version && docker info && docker-compose --version
-          Debian 10 : paquets « docker.io » + « docker-compose » (pas docker-ce des depots Docker.com).
-          Detail detection : {{ docker_detect.stdout | default(docker_detect_final.stderr | default('n/a')) }}
-      when: not docker_stack_ready | bool
+          Debian 10 : paquets docker.io + docker-compose (pas docker-ce Docker.com).
+          Detail : {{ docker_detect.stdout | default(docker_detect_final.stderr | default('n/a')) }}
+      when: not (docker_stack_ready | default(no))
 
     - name: Enable and start Docker
       systemd:
@@ -352,20 +344,7 @@
 
     - name: Set resolved release tag from GitHub
       set_fact:
-        resolved_release_tag: >-
-          {{
-            release_tag
-            if release_tag | length > 0
-            else (
-              gh_release.json.tag_name
-              if (gh_release.status | default(0)) == 200
-              else (
-                gh_tags.json[0].name
-                if (gh_tags.json | default([]) | length > 0)
-                else 'v0.1.0-alpha'
-              )
-            )
-          }}
+        resolved_release_tag: "{{ release_tag if release_tag | length > 0 else (gh_release.json.tag_name if (gh_release.status | default(0)) == 200 else (gh_tags.json[0].name if (gh_tags.json | default([]) | length > 0) else 'v0.1.0-alpha')) }}"
 
     - name: Check Vircom runtime before git clone (for backup)
       shell: |
@@ -385,7 +364,6 @@
         dest: "{{ deploy_dir }}"
         version: "{{ resolved_release_tag }}"
         force: yes
-        depth: 1
 
     - name: Restore docker/runtime backup after git clone
       shell: rsync -a /tmp/t4c-runtime-backup/ "{{ docker_runtime_dir }}/"
@@ -408,7 +386,13 @@
 
     - name: Set WDA missing flag
       set_fact:
-        wda_missing: "{{ wda_check.rc != 0 }}"
+        wda_missing: yes
+      when: wda_check.rc != 0
+
+    - name: Set WDA present flag
+      set_fact:
+        wda_missing: no
+      when: wda_check.rc == 0
 
     - name: Check local asset source path
       stat:
@@ -425,7 +409,7 @@
       args:
         executable: /bin/bash
       when:
-        - wda_missing | bool
+        - wda_missing | default(no)
         - local_wda.stat.exists
 
     - name: Re-verify WDA after local sync
@@ -439,95 +423,122 @@
 
     - name: Update WDA missing flag after local sync
       set_fact:
-        wda_missing: "{{ wda_check_local.rc != 0 }}"
-      when: local_wda.stat.exists
+        wda_missing: yes
+      when:
+        - local_wda.stat.exists
+        - wda_check_local.rc != 0
+
+    - name: Update WDA present flag after local sync
+      set_fact:
+        wda_missing: no
+      when:
+        - local_wda.stat.exists
+        - wda_check_local.rc == 0
 
     - name: Assets Vircom deja valides — skip MEGA (normal)
       debug:
         msg: "WDA OK dans {{ docker_runtime_dir }} — etapes MEGA skipees, on continue vers Docker."
-      when: not wda_missing | bool
+      when: not (wda_missing | default(no))
 
-    - name: Download Vircom assets from MEGA when still missing
-      when: wda_missing | bool
-      block:
-        - name: Install megatools on Debian
-          apt:
-            name: megatools
-            state: present
-            update_cache: no
-          when: ansible_os_family == "Debian"
+    - name: Install megatools on Debian
+      apt:
+        name: megatools
+        state: present
+        update_cache: no
+      when:
+        - wda_missing | default(no)
+        - ansible_os_family == "Debian"
 
-        - name: Install megatools on Arch
-          shell: pacman -Sy --noconfirm megatools
-          when: ansible_os_family == "Archlinux"
+    - name: Install megatools on Arch
+      shell: pacman -Sy --noconfirm megatools
+      when:
+        - wda_missing | default(no)
+        - ansible_os_family == "Archlinux"
 
-        - name: Require megadl binary
-          shell: command -v megadl && megadl --version
-          register: megadl_bin
-          changed_when: false
-          failed_when: megadl_bin.rc != 0
+    - name: Require megadl binary
+      shell: command -v megadl && megadl --version
+      register: megadl_bin
+      changed_when: false
+      failed_when: megadl_bin.rc != 0
+      when: wda_missing | default(no)
 
-        - name: Download MEGA folder (mega_server_url) with log
-          shell: |
-            set -euo pipefail
-            rm -rf "{{ t4c_staging_assets }}"
-            mkdir -p "{{ t4c_staging_assets }}"
-            LOG=/tmp/t4c-megadl.log
-            : > "$LOG"
-            megadl --path="{{ t4c_staging_assets }}" "{{ mega_server_url }}" >>"$LOG" 2>&1
-            find "{{ t4c_staging_assets }}" -maxdepth 5 -type d | head -20 >>"$LOG"
-          args:
-            executable: /bin/bash
-          register: mega_dl
+    - name: Download MEGA folder (mega_server_url) with log
+      shell: |
+        set -e
+        rm -rf "{{ t4c_staging_assets }}"
+        mkdir -p "{{ t4c_staging_assets }}"
+        LOG=/tmp/t4c-megadl.log
+        : > "$LOG"
+        megadl --path="{{ t4c_staging_assets }}" "{{ mega_server_url }}" >>"$LOG" 2>&1
+        find "{{ t4c_staging_assets }}" -maxdepth 5 -type d | head -20 >>"$LOG"
+      args:
+        executable: /bin/bash
+      register: mega_dl
+      when: wda_missing | default(no)
 
-        - name: Locate WDA in MEGA staging tree
-          shell: |
-            find "{{ t4c_staging_assets }}" -name 'T4C Worlds.WDA' -size +{{ wda_min_bytes }}c 2>/dev/null | head -1
-          register: wda_staging_path
-          changed_when: false
-          failed_when: false
+    - name: Locate WDA in MEGA staging tree
+      shell: |
+        find "{{ t4c_staging_assets }}" -name 'T4C Worlds.WDA' -size +{{ wda_min_bytes }}c 2>/dev/null | head -1
+      register: wda_staging_path
+      changed_when: false
+      failed_when: false
+      when: wda_missing | default(no)
 
-        - name: Fail with diagnostics when MEGA provision failed
-          fail:
-            msg: |
-              megadl a echoue ou WDA absent apres telechargement MEGA.
+    - name: Fail with diagnostics when MEGA provision failed
+      fail:
+        msg: |
+          megadl a echoue ou WDA absent apres telechargement MEGA.
 
-              URL utilisee : {{ mega_server_url }}
-              megadl rc={{ mega_dl.rc | default('?') }}
-              Log complet  : /tmp/t4c-megadl.log
-              stderr       : {{ mega_dl.stderr | default('') | trim }}
+          URL utilisee : {{ mega_server_url }}
+          megadl rc={{ mega_dl.rc | default('?') }}
+          Log complet  : /tmp/t4c-megadl.log
+          stderr       : {{ mega_dl.stderr | default('') }}
 
-              Test manuel sur le serveur :
-                apt-get install -y megatools
-                megadl --path=/tmp/test-mega '{{ mega_server_url }}'
-                find /tmp/test-mega -name 'T4C Worlds.WDA'
-          when:
-            - mega_dl.rc | default(1) != 0 or wda_staging_path.stdout | trim | length == 0
+          Test manuel sur le serveur :
+            apt-get install -y megatools
+            megadl --path=/tmp/test-mega '{{ mega_server_url }}'
+            find /tmp/test-mega -name 'T4C Worlds.WDA'
+      when:
+        - wda_missing | default(no)
+        - mega_dl.rc | default(1) != 0 or (wda_staging_path.stdout | default('') | length == 0)
 
-        - name: MEGA download OK
-          debug:
-            msg: "MEGA OK — WDA={{ wda_staging_path.stdout | trim }} — log /tmp/t4c-megadl.log"
+    - name: MEGA download OK
+      debug:
+        msg: "MEGA OK — WDA={{ wda_staging_path.stdout | default('') }} — log /tmp/t4c-megadl.log"
+      when: wda_missing | default(no)
 
-        - name: Sync MEGA staging into docker/runtime
-          shell: |
-            WDA="{{ wda_staging_path.stdout | trim }}"
-            RUNTIME="${WDA%/WDA/T4C Worlds.WDA}"
-            test -n "$RUNTIME" && test -d "$RUNTIME/WDA"
-            rsync -a --exclude='logs/' --exclude='SQL/' "${RUNTIME}/" "{{ docker_runtime_dir }}/"
-          args:
-            executable: /bin/bash
+    - name: Sync MEGA staging into docker/runtime
+      shell: |
+        WDA="{{ wda_staging_path.stdout | default('') }}"
+        RUNTIME="${WDA%/WDA/T4C Worlds.WDA}"
+        test -n "$RUNTIME" && test -d "$RUNTIME/WDA"
+        rsync -a --exclude='logs/' --exclude='SQL/' "${RUNTIME}/" "{{ docker_runtime_dir }}/"
+      args:
+        executable: /bin/bash
+      when: wda_missing | default(no)
 
-        - name: Re-verify WDA after MEGA sync
-          shell: |
-            WDA="{{ docker_runtime_dir }}/WDA/T4C Worlds.WDA"
-            test -f "$WDA" && test "$(stat -c%s "$WDA")" -ge {{ wda_min_bytes }}
-          register: wda_check_mega
-          changed_when: false
-          failed_when: false
+    - name: Re-verify WDA after MEGA sync
+      shell: |
+        WDA="{{ docker_runtime_dir }}/WDA/T4C Worlds.WDA"
+        test -f "$WDA" && test "$(stat -c%s "$WDA")" -ge {{ wda_min_bytes }}
+      register: wda_check_mega
+      changed_when: false
+      failed_when: false
+      when: wda_missing | default(no)
 
-        - name: Update WDA missing flag after MEGA sync
-          set_fact:
-            wda_missing: "{{ wda_check_mega.rc != 0 }}"
+    - name: Update WDA missing flag after MEGA sync
+      set_fact:
+        wda_missing: yes
+      when:
+        - wda_missing | default(no)
+        - wda_check_mega.rc != 0
+
+    - name: Update WDA present flag after MEGA sync
+      set_fact:
+        wda_missing: no
+      when:
+        - wda_missing | default(no)
+        - wda_check_mega.rc == 0
 
     - name: Fail if Vircom assets still invalid
       fail:
@@ -536,7 +547,7 @@
           (taille minimale {{ wda_min_bytes }} octets)
 
           Voir log MEGA : /tmp/t4c-megadl.log
-      when: wda_missing | bool
+      when: wda_missing | default(no)
 
     - name: Patch T4CServer.ini DB credentials
       lineinfile:
@@ -544,7 +555,7 @@
         regexp: "{{ item.regexp }}"
         line: "{{ item.line }}"
         create: no
-      loop:
+      with_items:
         - { regexp: '^DB_USER=', line: "DB_USER={{ db_user }}" }
         - { regexp: '^DB_PWD=', line: "DB_PWD={{ db_password }}" }
       failed_when: false
@@ -553,7 +564,7 @@
       file:
         path: "{{ deploy_dir }}/docker/{{ item }}"
         mode: "0755"
-      loop:
+      with_items:
         - entrypoint.sh
         - sync-runtime-from-build.sh
 
@@ -563,47 +574,19 @@
       changed_when: false
       failed_when: false
 
-    - name: Patch docker-compose.yml mariadb container name (replace, Ansible 2.7+)
-      replace:
-        path: "{{ deploy_dir }}/docker-compose.yml"
-        regexp: '(?m)^  mariadb:\n    image: mariadb:11'
-        replace: |
-          mariadb:
-            container_name: {{ t4c_container_mariadb }}
-            image: mariadb:11
-      when:
-        - ansible_use_replace_module | bool
-        - compose_names_patched.rc != 0
-
-    - name: Patch docker-compose.yml t4cserver container name (replace, Ansible 2.7+)
-      replace:
-        path: "{{ deploy_dir }}/docker-compose.yml"
-        regexp: '(?m)^  t4cserver:\n    build:'
-        replace: |
-          t4cserver:
-            container_name: {{ t4c_container_server }}
-            build:
-      when:
-        - ansible_use_replace_module | bool
-        - compose_names_patched.rc != 0
-
-    - name: Patch docker-compose.yml mariadb container name (lineinfile, Ansible legacy)
+    - name: Patch docker-compose.yml mariadb container name
       lineinfile:
         path: "{{ deploy_dir }}/docker-compose.yml"
         insertafter: '^  mariadb:$'
         line: "    container_name: {{ t4c_container_mariadb }}"
-      when:
-        - not ansible_use_replace_module | bool
-        - compose_names_patched.rc != 0
+      when: compose_names_patched.rc != 0
 
-    - name: Patch docker-compose.yml t4cserver container name (lineinfile, Ansible legacy)
+    - name: Patch docker-compose.yml t4cserver container name
       lineinfile:
         path: "{{ deploy_dir }}/docker-compose.yml"
         insertafter: '^  t4cserver:$'
         line: "    container_name: {{ t4c_container_server }}"
-      when:
-        - not ansible_use_replace_module | bool
-        - compose_names_patched.rc != 0
+      when: compose_names_patched.rc != 0
 
     - name: Write docker compose .env
       copy:
@@ -617,23 +600,30 @@
           T4C_DB_PASSWORD={{ db_password }}
           T4C_UDP_PORT={{ t4c_udp_port }}
           T4C_RUNTIME_ASSETS={{ docker_runtime_dir }}
-          T4C_VERIFY_WDA_MD5={{ '1' if (t4c_verify_wda_md5 | bool) else '0' }}
+          T4C_VERIFY_WDA_MD5={{ '1' if t4c_verify_wda_md5 else '0' }}
           COMPOSE_HTTP_TIMEOUT=1200
           DOCKER_CLIENT_TIMEOUT=1200
 
-    - name: Detect Docker engine version for legacy build workarounds
-      shell: docker version --format '{{ "{{" }}.Server.Version{{ "}}" }}' 2>/dev/null || echo "0.0.0"
-      register: docker_server_version_raw
+    - name: Detect legacy Docker build flags (Docker 18 / compose v1)
+      shell: |
+        LEGACY=0
+        V=$(docker version --format '{{ "{{" }}.Server.Version{{ "}}" }}' 2>/dev/null | cut -d. -f1)
+        if [ -n "$V" ] && [ "$V" -lt 20 ] 2>/dev/null; then LEGACY=1; fi
+        if [ "{{ docker_compose_cmd }}" != "docker compose" ]; then LEGACY=1; fi
+        echo "$LEGACY"
+      register: docker_legacy_raw
       changed_when: false
       failed_when: false
 
-    - name: Set legacy Docker build flags (Docker 18 / compose v1)
+    - name: Set docker legacy flag
       set_fact:
-        docker_legacy: >-
-          {{
-            (docker_server_version_raw.stdout | trim).split('.')[0] | int(99) < 20
-            or docker_compose_cmd != 'docker compose'
-          }}
+        docker_legacy: yes
+      when: docker_legacy_raw.stdout | default('0') | int == 1
+
+    - name: Set docker modern flag
+      set_fact:
+        docker_legacy: no
+      when: docker_legacy_raw.stdout | default('0') | int == 0
 
     - name: Check Arch Dockerfile pacman patch already applied
       shell: grep -q 'pacman-key --init' "{{ deploy_dir }}/docker/Dockerfile"
@@ -641,23 +631,7 @@
       changed_when: false
       failed_when: false
 
-    - name: Patch Arch Dockerfile pacman init (replace, Ansible 2.7+)
-      replace:
-        path: "{{ deploy_dir }}/docker/Dockerfile"
-        regexp: '^RUN pacman -Sy --noconfirm \\$'
-        replace: |-
-          RUN mkdir -p /var/lib/pacman/sync /var/lib/pacman/local \
-           && pacman-key --init \
-           && pacman-key --populate archlinux \
-           && pacman -Sy --noconfirm archlinux-keyring \
-           && pacman -Su --noconfirm \
-           && pacman -Sy --noconfirm \
-        replace_all: yes
-      when:
-        - ansible_use_replace_module | bool
-        - dockerfile_pacman_patched.rc != 0
-
-    - name: Patch Arch Dockerfile pacman init (python, Ansible legacy)
+    - name: Patch Arch Dockerfile pacman init (python3)
       shell: |
         python3 <<'PY'
         import pathlib
@@ -681,9 +655,7 @@
         PY
       args:
         executable: /bin/bash
-      when:
-        - not ansible_use_replace_module | bool
-        - dockerfile_pacman_patched.rc != 0
+      when: dockerfile_pacman_patched.rc != 0
 
     - name: Purge orphan t4c containers from failed runs
       shell: |
@@ -708,20 +680,19 @@
 
     - name: Build t4cserver image (log /tmp/t4c-docker-build.log)
       shell: |
-        set -o pipefail
+        set -e
         LOG=/tmp/t4c-docker-build.log
-        LEGACY="{{ '1' if docker_legacy | bool else '0' }}"
         docker container prune -f >/dev/null 2>&1 || true
-        echo "=== $(date -Is) build t4cserver legacy=${LEGACY} ===" >> "$LOG"
-        if [ "$LEGACY" = "1" ]; then
+        echo "=== $(date -Is) build t4cserver legacy={{ '1' if (docker_legacy | default(no)) else '0' }} ===" >> "$LOG"
+        if [ "{{ '1' if (docker_legacy | default(no)) else '0' }}" = "1" ]; then
           docker build --rm --security-opt seccomp=unconfined \
             -f docker/Dockerfile \
             -t t4c-server-linux:local \
-            . 2>&1 | tee -a "$LOG"
-          BUILD_RC=${PIPESTATUS[0]}
+            . >>"$LOG" 2>&1
+          BUILD_RC=$?
         else
-          {{ docker_compose_cmd }} -p {{ compose_project_name }} build t4cserver 2>&1 | tee -a "$LOG"
-          BUILD_RC=${PIPESTATUS[0]}
+          {{ docker_compose_cmd }} -p {{ compose_project_name }} build t4cserver >>"$LOG" 2>&1
+          BUILD_RC=$?
         fi
         docker container prune -f >/dev/null 2>&1 || true
         exit "$BUILD_RC"
@@ -734,28 +705,30 @@
       register: compose_build
       failed_when: false
 
+    - name: Read docker build log tail on failure
+      shell: tail -60 /tmp/t4c-docker-build.log 2>/dev/null || echo "(log absent)"
+      register: docker_build_log_tail
+      changed_when: false
+      failed_when: false
+      when: compose_build.rc | default(1) != 0
+
     - name: Fail if docker build failed (voir log)
       fail:
         msg: |
           Build image t4cserver echoue (rc={{ compose_build.rc }}).
-          Docker legacy={{ docker_legacy | bool }} (engine {{ docker_server_version_raw.stdout | trim }})
+          Docker legacy={{ docker_legacy | default(no) }}
 
           Log : /tmp/t4c-docker-build.log
           Dernieres lignes :
-          {{ lookup('pipe', 'tail -60 /tmp/t4c-docker-build.log 2>/dev/null || echo "(log absent)"') }}
+          {{ docker_build_log_tail.stdout | default('') }}
 
-          Erreur pacman/alpm sur Docker 18 : le playbook patche docker/Dockerfile
-          (pacman-key) et build avec seccomp=unconfined. Si ca persiste :
+          Si erreur pacman/alpm sur Docker 18 :
             rm -f /tmp/t4c-server-deploy.lock
             cd {{ deploy_dir }} && docker build --security-opt seccomp=unconfined -f docker/Dockerfile -t t4c-server-linux:local .
       when: compose_build.rc | default(1) != 0
 
     - name: Start Docker stack
-      shell: |
-        set -o pipefail
-        LOG=/tmp/t4c-docker-up.log
-        {{ docker_compose_cmd }} -p {{ compose_project_name }} up -d --remove-orphans --no-build 2>&1 | tee "$LOG"
-        exit ${PIPESTATUS[0]}
+      shell: "{{ docker_compose_cmd }} -p {{ compose_project_name }} up -d --remove-orphans --no-build >> /tmp/t4c-docker-up.log 2>&1"
       args:
         chdir: "{{ deploy_dir }}"
       environment:
@@ -764,12 +737,19 @@
       register: compose_up
       failed_when: false
 
+    - name: Read docker up log tail on failure
+      shell: tail -40 /tmp/t4c-docker-up.log 2>/dev/null || echo "(log absent)"
+      register: docker_up_log_tail
+      changed_when: false
+      failed_when: false
+      when: compose_up.rc | default(1) != 0
+
     - name: Fail if docker up failed (voir log)
       fail:
         msg: |
           docker-compose up a echoue (rc={{ compose_up.rc }}).
           Log : /tmp/t4c-docker-up.log
-          {{ lookup('pipe', 'tail -40 /tmp/t4c-docker-up.log 2>/dev/null || echo "(log absent)"') }}
+          {{ docker_up_log_tail.stdout | default('') }}
       when: compose_up.rc | default(1) != 0
 
     - name: Wait for t4c-stack-server container (boot WDA may take minutes)
@@ -802,15 +782,20 @@
 
           [Install]
           WantedBy=multi-user.target
-      when: enable_systemd | bool
+      when: enable_systemd | default(true)
+
+    - name: Reload systemd after unit install
+      shell: systemctl daemon-reload
+      changed_when: false
+      failed_when: false
+      when: enable_systemd | default(true)
 
     - name: Enable t4c-server-docker systemd service
       systemd:
         name: t4c-server-docker
         enabled: yes
-        daemon_reload: yes
         state: started
-      when: enable_systemd | bool
+      when: enable_systemd | default(true)
 
     - name: Remove deploy lock after run
       file:
