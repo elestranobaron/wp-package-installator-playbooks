@@ -2,6 +2,24 @@
   "version": "1.0.0",
   "packages": [
     {
+      "name": "P2P Sport — Environnement de développement",
+      "description": "Prépare une machine Debian pour le développement du réseau social sport décentralisé : Rust + wasm-pack, Node.js 20, ffmpeg, Docker, Docker Compose, et clone les 3 repos (core-p2p, sport-lexicon, sport-app).",
+      "options": [
+        {
+          "name": "github_user",
+          "type": "text",
+          "default": "elestranobaron",
+          "label": "Nom d'utilisateur GitHub"
+        },
+        {
+          "name": "install_dir",
+          "type": "text",
+          "default": "/opt/p2p-sport",
+          "label": "Répertoire d'installation"
+        }
+      ]
+    },
+    {
       "name": "Freqtrade",
       "description": "Free and open-source crypto trading bot written in Python. It is designed to support all major exchanges and be controlled via Telegram or a WebUI.",
       "version": "1.0.0",
