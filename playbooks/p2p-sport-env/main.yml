@@ -1,0 +1,214 @@
+---
+- name: Préparer l'environnement de développement P2P Sport
+  hosts: all
+  become: yes
+  vars:
+    install_dir: "{{ install_dir | default('/opt/p2p-sport') }}"
+    github_user: "{{ github_user | default('elestranobaron') }}"
+    node_version: "20"
+    rust_version: "stable"
+
+  tasks:
+
+    # ─── SYSTÈME ───────────────────────────────────────────────────────────────
+
+    - name: Mettre à jour apt
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Installer les dépendances système
+      apt:
+        name:
+          - curl
+          - git
+          - build-essential
+          - pkg-config
+          - libssl-dev
+          - ffmpeg
+          - ca-certificates
+          - gnupg
+          - lsb-release
+          - python3-pip
+        state: present
+
+    # ─── RUST ──────────────────────────────────────────────────────────────────
+
+    - name: Vérifier si Rust est déjà installé
+      command: rustc --version
+      register: rust_check
+      ignore_errors: yes
+      changed_when: false
+      become: no
+
+    - name: Télécharger et installer Rust via rustup
+      shell: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain {{ rust_version }}
+      become: no
+      when: rust_check.rc != 0
+
+    - name: Ajouter la target wasm32-unknown-unknown
+      shell: ~/.cargo/bin/rustup target add wasm32-unknown-unknown
+      become: no
+      ignore_errors: yes
+
+    - name: Installer wasm-pack
+      shell: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      become: no
+      args:
+        creates: ~/.cargo/bin/wasm-pack
+
+    - name: Vérifier Rust
+      shell: ~/.cargo/bin/rustc --version
+      become: no
+      register: rust_version_check
+      changed_when: false
+
+    - name: Afficher la version Rust
+      debug:
+        msg: "Rust : {{ rust_version_check.stdout }}"
+
+    # ─── NODE.JS ───────────────────────────────────────────────────────────────
+
+    - name: Vérifier si Node.js est déjà installé
+      command: node --version
+      register: node_check
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Ajouter le dépôt NodeSource pour Node.js 20
+      shell: |
+        curl -fsSL https://deb.nodesource.com/setup_{{ node_version }}.x | bash -
+      when: node_check.rc != 0 or not node_check.stdout.startswith('v20')
+
+    - name: Installer Node.js 20
+      apt:
+        name: nodejs
+        state: present
+      when: node_check.rc != 0 or not node_check.stdout.startswith('v20')
+
+    - name: Vérifier Node.js
+      command: node --version
+      register: node_version_check
+      changed_when: false
+
+    - name: Afficher la version Node.js
+      debug:
+        msg: "Node.js : {{ node_version_check.stdout }}"
+
+    # ─── DOCKER ────────────────────────────────────────────────────────────────
+
+    - name: Vérifier si Docker est déjà installé
+      command: docker --version
+      register: docker_check
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Ajouter la clé GPG Docker
+      shell: |
+        install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+        chmod a+r /etc/apt/keyrings/docker.asc
+      when: docker_check.rc != 0
+
+    - name: Ajouter le dépôt Docker
+      shell: |
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+        https://download.docker.com/linux/debian $(lsb_release -cs) stable" \
+        > /etc/apt/sources.list.d/docker.list
+      when: docker_check.rc != 0
+
+    - name: Installer Docker Engine + Compose
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        update_cache: yes
+        state: present
+      when: docker_check.rc != 0
+
+    - name: Démarrer et activer Docker
+      service:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Ajouter l'utilisateur courant au groupe docker
+      user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: yes
+      ignore_errors: yes
+
+    - name: Vérifier Docker
+      command: docker --version
+      register: docker_version_check
+      changed_when: false
+
+    - name: Afficher la version Docker
+      debug:
+        msg: "Docker : {{ docker_version_check.stdout }}"
+
+    # ─── REPOS ─────────────────────────────────────────────────────────────────
+
+    - name: Créer le répertoire d'installation
+      file:
+        path: "{{ install_dir }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0755'
+
+    - name: Cloner core-p2p
+      git:
+        repo: "https://github.com/{{ github_user }}/core-p2p.git"
+        dest: "{{ install_dir }}/core-p2p"
+        version: main
+        force: no
+      become: no
+      ignore_errors: yes
+      register: clone_core
+
+    - name: Cloner sport-lexicon
+      git:
+        repo: "https://github.com/{{ github_user }}/sport-lexicon.git"
+        dest: "{{ install_dir }}/sport-lexicon"
+        version: main
+        force: no
+      become: no
+      ignore_errors: yes
+      register: clone_lexicon
+
+    - name: Cloner sport-app
+      git:
+        repo: "https://github.com/{{ github_user }}/sport-app.git"
+        dest: "{{ install_dir }}/sport-app"
+        version: main
+        force: no
+      become: no
+      ignore_errors: yes
+      register: clone_app
+
+    # ─── RÉSUMÉ ────────────────────────────────────────────────────────────────
+
+    - name: Résumé de l'installation
+      debug:
+        msg:
+          - "────────────────────────────────────────"
+          - "  P2P Sport — Environnement prêt"
+          - "────────────────────────────────────────"
+          - "Rust      : {{ rust_version_check.stdout }}"
+          - "Node.js   : {{ node_version_check.stdout }}"
+          - "Docker    : {{ docker_version_check.stdout }}"
+          - "ffmpeg    : installé"
+          - "wasm-pack : installé"
+          - "────────────────────────────────────────"
+          - "Repos dans {{ install_dir }}/"
+          - "  core-p2p      : {{ 'OK' if clone_core is not failed else 'repo inexistant — à créer' }}"
+          - "  sport-lexicon : {{ 'OK' if clone_lexicon is not failed else 'repo inexistant — à créer' }}"
+          - "  sport-app     : {{ 'OK' if clone_app is not failed else 'repo inexistant — à créer' }}"
+          - "────────────────────────────────────────"
+          - "Prochaine étape : docker compose up --build"
+          - "────────────────────────────────────────"
