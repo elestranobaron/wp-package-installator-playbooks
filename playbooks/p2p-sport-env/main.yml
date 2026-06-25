@@ -53,7 +53,9 @@
       ignore_errors: yes
 
     - name: Installer wasm-pack
-      shell: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      shell: |
+        export PATH="$HOME/.cargo/bin:$PATH"
+        curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
       become: no
       args:
         creates: ~/.cargo/bin/wasm-pack
