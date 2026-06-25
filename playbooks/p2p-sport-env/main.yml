@@ -4,8 +4,8 @@
   connection: local
   become: yes
   vars:
-    install_dir: "{{ install_dir | default('/opt/p2p-sport') }}"
-    github_user: "{{ github_user | default('tlloancy') }}"
+    install_dir: "{{ _install_dir | default('/opt/p2p-sport') }}"
+    github_user: "{{ _github_user | default('tlloancy') }}"
     node_version: "20"
     rust_version: "stable"
 
