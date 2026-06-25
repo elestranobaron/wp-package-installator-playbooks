@@ -140,7 +140,7 @@
 
     - name: Ajouter l'utilisateur courant au groupe docker
       user:
-        name: lookup("env", "USER")
+        name: "{{ lookup('env', 'USER') }}"
         groups: docker
         append: yes
       ignore_errors: yes
@@ -160,8 +160,8 @@
       file:
         path: "{{ install_dir }}"
         state: directory
-        owner: lookup("env", "USER")
-        group: lookup("env", "USER")
+        owner: "{{ lookup('env', 'USER') }}"
+        group: "{{ lookup('env', 'USER') }}"
         mode: '0755'
 
     - name: Cloner core-p2p
