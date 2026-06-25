@@ -1,10 +1,11 @@
 ---
 - name: Préparer l'environnement de développement P2P Sport
-  hosts: all
+  hosts: localhost
+  connection: local
   become: yes
   vars:
     install_dir: "{{ install_dir | default('/opt/p2p-sport') }}"
-    github_user: "{{ github_user | default('elestranobaron') }}"
+    github_user: "{{ github_user | default('tlloancy') }}"
     node_version: "20"
     rust_version: "stable"
 
@@ -191,6 +192,22 @@
       ignore_errors: yes
       register: clone_app
 
+    # ─── BUILD ─────────────────────────────────────────────────────────────────
+
+    - name: Build WASM core-p2p
+      shell: ~/.cargo/bin/wasm-pack build --target nodejs
+      args:
+        chdir: "{{ install_dir }}/core-p2p"
+      become: no
+      ignore_errors: yes
+
+    - name: npm install sport-app
+      shell: npm install
+      args:
+        chdir: "{{ install_dir }}/sport-app"
+      become: no
+      ignore_errors: yes
+
     # ─── RÉSUMÉ ────────────────────────────────────────────────────────────────
 
     - name: Résumé de l'installation
@@ -206,9 +223,12 @@
           - "wasm-pack : installé"
           - "────────────────────────────────────────"
           - "Repos dans {{ install_dir }}/"
-          - "  core-p2p      : {{ 'OK' if clone_core is not failed else 'repo inexistant — à créer' }}"
-          - "  sport-lexicon : {{ 'OK' if clone_lexicon is not failed else 'repo inexistant — à créer' }}"
-          - "  sport-app     : {{ 'OK' if clone_app is not failed else 'repo inexistant — à créer' }}"
+          - "  core-p2p      : {{ 'OK' if clone_core is not failed else 'repo inexistant' }}"
+          - "  sport-lexicon : {{ 'OK' if clone_lexicon is not failed else 'repo inexistant' }}"
+          - "  sport-app     : {{ 'OK' if clone_app is not failed else 'repo inexistant' }}"
           - "────────────────────────────────────────"
-          - "Prochaine étape : docker compose up --build"
+          - "Lancer : cd /opt/p2p-sport/sport-app"
+          - "         bash scripts/start_pds.sh"
+          - "         bash scripts/start_pds2.sh"
+          - "         npx tsx test/e2e-full.ts"
           - "────────────────────────────────────────"
