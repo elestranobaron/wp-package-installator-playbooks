@@ -2,20 +2,25 @@
   "version": "1.0.0",
   "packages": [
     {
+      "id": "p2p-sport-env",
       "name": "P2P Sport — Environnement de développement",
-      "description": "Prépare une machine Debian pour le développement du réseau social sport décentralisé : Rust + wasm-pack, Node.js 20, ffmpeg, Docker, Docker Compose, et clone les 3 repos (core-p2p, sport-lexicon, sport-app).",
+      "category": "Dev",
+      "description": "Prépare une machine Debian pour le développement du réseau social sport décentralisé : Node.js 20, ffmpeg, Docker, Docker Compose, et clone les 3 repos (core-p2p, sport-lexicon, sport-app).",
+      "playbook": "playbooks/p2p-sport-env/main.yml",
+      "author": "Thomas Lloancy",
+      "version": "1.0.0",
       "options": [
         {
-          "name": "github_user",
+          "key": "github_user",
+          "label": "Nom d'utilisateur GitHub",
           "type": "text",
-          "default": "elestranobaron",
-          "label": "Nom d'utilisateur GitHub"
+          "default": "tlloancy"
         },
         {
-          "name": "install_dir",
+          "key": "install_dir",
+          "label": "Répertoire d'installation",
           "type": "text",
-          "default": "/opt/p2p-sport",
-          "label": "Répertoire d'installation"
+          "default": "/opt/p2p-sport"
         }
       ]
     },
