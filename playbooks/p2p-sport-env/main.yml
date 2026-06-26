@@ -214,17 +214,32 @@
       become: no
       ignore_errors: yes
 
+    - name: Trouver npm
+      shell: which npm || find /usr/local/bin /usr/bin -name npm 2>/dev/null | head -1
+      register: npm_path
+      become: no
+      ignore_errors: yes
+      changed_when: false
+
     - name: Build binaire natif core-p2p (index.node)
-      shell: bash -c "source ~/.cargo/env && /usr/bin/npm install && /usr/bin/npm run build"
+      shell: |
+        source ~/.cargo/env
+        export CARGO_TARGET_DIR=/root/.cache/core-p2p-target
+        NPM=$(which npm 2>/dev/null || find /usr/local/bin /usr/bin -name npm 2>/dev/null | head -1)
+        $NPM install && $NPM run build
       args:
         chdir: "{{ install_dir }}/core-p2p"
+        executable: /bin/bash
       become: no
       ignore_errors: yes
 
     - name: npm install sport-app
-      shell: /usr/bin/npm install
+      shell: |
+        NPM=$(which npm 2>/dev/null || find /usr/local/bin /usr/bin -name npm 2>/dev/null | head -1)
+        $NPM install
       args:
         chdir: "{{ install_dir }}/sport-app"
+        executable: /bin/bash
       become: no
       ignore_errors: yes
 
