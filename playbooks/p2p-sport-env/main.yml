@@ -196,10 +196,20 @@
 
     # ─── BUILD ─────────────────────────────────────────────────────────────────
 
-    - name: Build WASM core-p2p
-      shell: bash -c "source ~/.cargo/env && ~/.cargo/bin/wasm-pack build --target nodejs --dev"
+    - name: Build WASM core-p2p (release si RAM > 2GB, dev sinon)
+      shell: |
+        source ~/.cargo/env
+        AVAILABLE_MB=$(free -m | awk '/^Mem:/{print $7}')
+        if [ "$AVAILABLE_MB" -gt 2048 ]; then
+          echo "RAM disponible : ${AVAILABLE_MB}MB — build release"
+          ~/.cargo/bin/wasm-pack build --target nodejs
+        else
+          echo "RAM disponible : ${AVAILABLE_MB}MB — build dev (RAM insuffisante pour release)"
+          ~/.cargo/bin/wasm-pack build --target nodejs --dev
+        fi
       args:
         chdir: "{{ install_dir }}/core-p2p"
+        executable: /bin/bash
       become: no
       ignore_errors: yes
 
