@@ -197,7 +197,14 @@
     # ─── BUILD ─────────────────────────────────────────────────────────────────
 
     - name: Build WASM core-p2p
-      shell: ~/.cargo/bin/wasm-pack build --target nodejs
+      shell: bash -c "source ~/.cargo/env && ~/.cargo/bin/wasm-pack build --target nodejs --dev"
+      args:
+        chdir: "{{ install_dir }}/core-p2p"
+      become: no
+      ignore_errors: yes
+
+    - name: Build binaire natif core-p2p (index.node)
+      shell: bash -c "source ~/.cargo/env && npm install && npm run build"
       args:
         chdir: "{{ install_dir }}/core-p2p"
       become: no
