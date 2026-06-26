@@ -31,6 +31,7 @@
           - gnupg
           - lsb-release
           - python3-pip
+          - npm
         state: present
 
     # ─── RUST ──────────────────────────────────────────────────────────────────
@@ -214,14 +215,14 @@
       ignore_errors: yes
 
     - name: Build binaire natif core-p2p (index.node)
-      shell: bash -c "source ~/.cargo/env && npm install && npm run build"
+      shell: bash -c "source ~/.cargo/env && /usr/bin/npm install && /usr/bin/npm run build"
       args:
         chdir: "{{ install_dir }}/core-p2p"
       become: no
       ignore_errors: yes
 
     - name: npm install sport-app
-      shell: npm install
+      shell: /usr/bin/npm install
       args:
         chdir: "{{ install_dir }}/sport-app"
       become: no
