@@ -243,6 +243,73 @@
       become: no
       ignore_errors: yes
 
+    # ─── BUILD NEXT.JS ────────────────────────────────────────────────────────
+
+    - name: Build Next.js sport-app
+      shell: |
+        NPM=$(which npm 2>/dev/null || find /usr/local/bin /usr/bin -name npm 2>/dev/null | head -1)
+        $NPM run build
+      args:
+        chdir: "{{ install_dir }}/sport-app"
+        executable: /bin/bash
+      become: no
+      ignore_errors: yes
+
+    # ─── PM2 ──────────────────────────────────────────────────────────────────
+
+    - name: Installer PM2
+      shell: |
+        NPM=$(which npm 2>/dev/null || find /usr/local/bin /usr/bin -name npm 2>/dev/null | head -1)
+        $NPM install -g pm2
+      args:
+        executable: /bin/bash
+      ignore_errors: yes
+
+    - name: Démarrer sport-app avec PM2 (port 4000)
+      shell: |
+        pm2 delete sport-app 2>/dev/null || true
+        cd {{ install_dir }}/sport-app
+        pm2 start "npm run start -- -p 4000" --name sport-app
+      args:
+        executable: /bin/bash
+      become: no
+      ignore_errors: yes
+
+    - name: Démarrer PDS A avec PM2
+      shell: |
+        pm2 delete pds-a 2>/dev/null || true
+        pm2 start "bash {{ install_dir }}/sport-app/scripts/start_pds.sh" --name pds-a
+      args:
+        executable: /bin/bash
+      become: no
+      ignore_errors: yes
+
+    - name: Démarrer PDS B avec PM2
+      shell: |
+        pm2 delete pds-b 2>/dev/null || true
+        pm2 start "bash {{ install_dir }}/sport-app/scripts/start_pds2.sh" --name pds-b
+      args:
+        executable: /bin/bash
+      become: no
+      ignore_errors: yes
+
+    - name: Démarrer blob-relay iroh avec PM2
+      shell: |
+        pm2 delete blob-relay 2>/dev/null || true
+        pm2 start "/root/.cache/core-p2p-target/release/examples/blob_relay serve" --name blob-relay
+      args:
+        executable: /bin/bash
+      become: no
+      ignore_errors: yes
+
+    - name: Sauvegarder PM2 et activer au démarrage
+      shell: |
+        pm2 save
+        pm2 startup systemd -u root --hp /root | tail -1 | bash || true
+      args:
+        executable: /bin/bash
+      ignore_errors: yes
+
     # ─── RÉSUMÉ ────────────────────────────────────────────────────────────────
 
     - name: Résumé de l'installation
