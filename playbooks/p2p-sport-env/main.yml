@@ -275,22 +275,24 @@
       become: no
       ignore_errors: yes
 
-    - name: Démarrer PDS A avec PM2
+    - name: Lancer PDS A (one-shot Docker)
       shell: |
-        pm2 delete pds-a 2>/dev/null || true
-        pm2 start "bash {{ install_dir }}/sport-app/scripts/start_pds.sh" --name pds-a
+        if ! docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q '^pds_local$'; then
+          bash {{ install_dir }}/sport-app/scripts/start_pds.sh
+        fi
+        docker update --restart=always pds_local
       args:
         executable: /bin/bash
-      become: no
       ignore_errors: yes
 
-    - name: Démarrer PDS B avec PM2
+    - name: Lancer PDS B (one-shot Docker)
       shell: |
-        pm2 delete pds-b 2>/dev/null || true
-        pm2 start "bash {{ install_dir }}/sport-app/scripts/start_pds2.sh" --name pds-b
+        if ! docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q '^pds_local_2$'; then
+          bash {{ install_dir }}/sport-app/scripts/start_pds2.sh
+        fi
+        docker update --restart=always pds_local_2
       args:
         executable: /bin/bash
-      become: no
       ignore_errors: yes
 
     - name: Démarrer blob-relay iroh avec PM2
