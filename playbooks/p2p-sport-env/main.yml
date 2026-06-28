@@ -312,6 +312,25 @@
         executable: /bin/bash
       ignore_errors: yes
 
+    - name: Créer le script deploy
+      copy:
+        dest: /root/deploy.sh
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          set -e
+          # Rebuild core-p2p si modifié
+          cd {{ install_dir }}/core-p2p
+          git pull origin main
+          source ~/.cargo/env && npm run build
+          # Deploy sport-app
+          cd {{ install_dir }}/sport-app
+          git pull origin main
+          npm install
+          npm run build
+          pm2 restart sport-app
+          echo "Deploy OK — $(date)"
+
     # ─── RÉSUMÉ ────────────────────────────────────────────────────────────────
 
     - name: Résumé de l'installation
