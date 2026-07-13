@@ -373,7 +373,7 @@
       "category": "Automation",
       "icon": "🤖",
       "version": "1.0.0",
-      "description": "Bot X (Twitter) 100% automatisé : tweets d'actualité générés par IA (Claude, GPT, Gemini, Grok...) depuis des flux RSS, avec admin web complète. Mono-conteneur Docker, SQLite embarquée, clés API chiffrées. Optionnel : Nginx + Let's Encrypt si un domaine est fourni.",
+      "description": "Bot X (Twitter) 100% automatisé : tweets d'actualité générés par IA (Claude, GPT, Gemini, Grok...) depuis des flux RSS, avec admin web complète. Mono-conteneur Docker, SQLite embarquée, clés API chiffrées. Reverse proxy au choix via tags Ansible natifs : --tags nginx ou --tags apache (rien = app seule).",
       "options": [
         {
           "name": "github_token",
@@ -409,7 +409,7 @@
           "name": "xdigger_domain",
           "type": "text",
           "default": "",
-          "label": "Domaine pour l'admin en HTTPS (ex: bot.mondomaine.com) — vide = pas de Nginx"
+          "label": "Domaine pour l'admin en HTTPS (ex: bot.mondomaine.com) — requis avec --tags nginx/apache"
         },
         {
           "name": "certbot_email",
