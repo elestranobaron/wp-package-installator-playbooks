@@ -1,0 +1,51 @@
+{
+  "name": "X-Digger (bot X automatisé)",
+  "category": "Automation",
+  "icon": "🤖",
+  "version": "1.0.0",
+  "description": "Bot X (Twitter) 100% automatisé : tweets d'actualité générés par IA (Claude, GPT, Gemini, Grok...) depuis des flux RSS, avec admin web complète. Mono-conteneur Docker, SQLite embarquée, clés API chiffrées. Optionnel : Nginx + Let's Encrypt si un domaine est fourni.",
+  "options": [
+    {
+      "name": "github_token",
+      "type": "text",
+      "default": "",
+      "label": "Token GitHub (PAT) — requis car le dépôt x-digger est privé"
+    },
+    {
+      "name": "xdigger_repo",
+      "type": "text",
+      "default": "https://github.com/elestranobaron/x-digger.git",
+      "label": "URL du dépôt Git"
+    },
+    {
+      "name": "xdigger_dir",
+      "type": "text",
+      "default": "/opt/x-digger",
+      "label": "Répertoire d'installation"
+    },
+    {
+      "name": "xdigger_port",
+      "type": "number",
+      "default": 3010,
+      "label": "Port HTTP de l'admin"
+    },
+    {
+      "name": "app_secret",
+      "type": "text",
+      "default": "",
+      "label": "APP_SECRET (chiffrement des clés API) — laisser vide pour auto-générer"
+    },
+    {
+      "name": "xdigger_domain",
+      "type": "text",
+      "default": "",
+      "label": "Domaine pour l'admin en HTTPS (ex: bot.mondomaine.com) — vide = pas de Nginx"
+    },
+    {
+      "name": "certbot_email",
+      "type": "text",
+      "default": "",
+      "label": "Email Let's Encrypt (requis si domaine renseigné)"
+    }
+  ]
+}
