@@ -26,11 +26,9 @@
   tasks:
     # ---------------- Cœur : toujours exécuté ----------------
 
-    - name: Installer Docker, Compose et Git
+    - name: Installer Git et OpenSSL
       apt:
         name:
-          - docker.io
-          - docker-compose-v2
           - git
           - openssl
         state: present
@@ -38,11 +36,57 @@
         cache_valid_time: 3600
       tags: [always]
 
+    # Docker peut déjà être présent (docker-ce, docker.io…) : on n'installe
+    # docker.io que s'il n'y a rien, pour ne pas créer de conflit de paquets.
+    - name: Vérifier si Docker est déjà présent
+      command: docker --version
+      register: docker_probe
+      failed_when: false
+      changed_when: false
+      tags: [always]
+
+    - name: Installer Docker si absent
+      apt:
+        name: docker.io
+        state: present
+      when: docker_probe.rc != 0
+      tags: [always]
+
     - name: Démarrer et activer Docker
       service:
         name: docker
         state: started
         enabled: true
+      tags: [always]
+
+    # Compose : on utilise ce qui existe (plugin v2 « docker compose » ou
+    # binaire v1 « docker-compose ») et on n'installe que si rien n'est là,
+    # en essayant les noms de paquets selon la version de la distribution.
+    - name: Détecter Docker Compose (plugin v2 ou binaire v1)
+      shell: >
+        if docker compose version >/dev/null 2>&1; then echo "docker compose";
+        elif command -v docker-compose >/dev/null 2>&1; then echo "docker-compose";
+        else echo "none"; fi
+      register: compose_probe
+      changed_when: false
+      tags: [always]
+
+    - name: Installer Docker Compose si absent (premier paquet disponible)
+      shell: >
+        apt-get install -y docker-compose-plugin ||
+        apt-get install -y docker-compose-v2 ||
+        apt-get install -y docker-compose
+      when: compose_probe.stdout == "none"
+      tags: [always]
+
+    - name: Mémoriser la commande Compose à utiliser
+      shell: >
+        if docker compose version >/dev/null 2>&1; then echo "docker compose";
+        elif command -v docker-compose >/dev/null 2>&1; then echo "docker-compose";
+        else echo "none"; fi
+      register: compose_cmd_probe
+      changed_when: false
+      failed_when: compose_cmd_probe.stdout == "none"
       tags: [always]
 
     - name: Vérifier que le domaine est fourni si un proxy est demandé
@@ -92,6 +136,8 @@
         dest: "{{ xdigger_dir }}/docker-compose.prod.yml"
         mode: "0644"
         content: |
+          # « version » est obsolète pour Compose v2 mais requis par Compose v1.
+          version: "3.8"
           services:
             xdigger:
               build: {{ xdigger_dir }}/src
@@ -107,10 +153,12 @@
 
     - name: Builder et démarrer le conteneur
       command:
-        cmd: docker compose -f docker-compose.prod.yml up -d --build
+        cmd: "{{ compose_cmd_probe.stdout }} -f docker-compose.prod.yml up -d --build"
         chdir: "{{ xdigger_dir }}"
       register: compose_up
-      changed_when: "'Started' in compose_up.stderr or 'Recreated' in compose_up.stderr or 'Created' in compose_up.stderr"
+      # Les libellés diffèrent entre Compose v1 (Creating/Starting/Recreating)
+      # et v2 (Created/Started/Recreated).
+      changed_when: compose_up.stderr is search('Creat|Start|Recreat')
       tags: [always]
 
     - name: Attendre que l'application réponde (/health)
