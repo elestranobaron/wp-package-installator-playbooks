@@ -1,4 +1,14 @@
 ---
+# Déploiement X-Digger.
+#
+# Choix du serveur web via les tags natifs Ansible :
+#   ansible-playbook main.yml                 → app seule (pas de reverse proxy)
+#   ansible-playbook main.yml --tags nginx    → app + vhost Nginx + Let's Encrypt
+#   ansible-playbook main.yml --tags apache   → app + vhost Apache + Let's Encrypt
+#
+# Les tâches cœur sont taguées `always` (exécutées même avec --tags) ; les
+# blocs nginx/apache sont tagués `never` (exécutés uniquement si demandés).
+
 - name: Deploy X-Digger (bot X automatisé + admin web)
   hosts: all
   become: true
@@ -10,8 +20,12 @@
     app_secret: ""
     xdigger_domain: ""
     certbot_email: ""
+    # true si un reverse proxy est demandé via --tags nginx ou --tags apache
+    use_proxy: "{{ 'nginx' in ansible_run_tags or 'apache' in ansible_run_tags }}"
 
   tasks:
+    # ---------------- Cœur : toujours exécuté ----------------
+
     - name: Installer Docker, Compose et Git
       apt:
         name:
@@ -22,18 +36,30 @@
         state: present
         update_cache: true
         cache_valid_time: 3600
+      tags: [always]
 
     - name: Démarrer et activer Docker
       service:
         name: docker
         state: started
         enabled: true
+      tags: [always]
+
+    - name: Vérifier que le domaine est fourni si un proxy est demandé
+      assert:
+        that:
+          - xdigger_domain | length > 0
+          - certbot_email | length > 0
+        fail_msg: "--tags nginx/apache nécessite xdigger_domain et certbot_email"
+      when: use_proxy | bool
+      tags: [always]
 
     - name: Créer le répertoire d'installation
       file:
         path: "{{ xdigger_dir }}"
         state: directory
         mode: "0755"
+      tags: [always]
 
     - name: Cloner / mettre à jour le dépôt x-digger
       git:
@@ -41,6 +67,7 @@
         dest: "{{ xdigger_dir }}/src"
         version: main
         force: true
+      tags: [always]
 
     # APP_SECRET : la SEULE variable d'environnement du conteneur. Elle chiffre
     # les clés API en base — si elle change, les clés devront être resaisies
@@ -50,6 +77,7 @@
       args:
         creates: "{{ xdigger_dir }}/.env"
       when: app_secret | length == 0
+      tags: [always]
 
     - name: Déposer l'APP_SECRET fourni
       copy:
@@ -57,6 +85,7 @@
         content: "APP_SECRET={{ app_secret }}\n"
         mode: "0600"
       when: app_secret | length > 0
+      tags: [always]
 
     - name: Déposer le docker-compose de production
       copy:
@@ -68,12 +97,13 @@
               build: {{ xdigger_dir }}/src
               container_name: x-digger
               ports:
-                - "{{ ('127.0.0.1:' ~ xdigger_port) if xdigger_domain | length > 0 else xdigger_port }}:3000"
+                - "{{ ('127.0.0.1:' ~ xdigger_port) if use_proxy | bool else xdigger_port }}:3000"
               env_file:
                 - {{ xdigger_dir }}/.env
               volumes:
                 - {{ xdigger_dir }}/data:/app/data
               restart: unless-stopped
+      tags: [always]
 
     - name: Builder et démarrer le conteneur
       command:
@@ -81,6 +111,7 @@
         chdir: "{{ xdigger_dir }}"
       register: compose_up
       changed_when: "'Started' in compose_up.stderr or 'Recreated' in compose_up.stderr or 'Created' in compose_up.stderr"
+      tags: [always]
 
     - name: Attendre que l'application réponde (/health)
       uri:
@@ -90,67 +121,123 @@
       retries: 12
       delay: 5
       until: health.status == 200
+      tags: [always]
 
-    # ---- Reverse proxy HTTPS (uniquement si un domaine est fourni) ----
+    # ---------------- Variante Nginx : --tags nginx ----------------
 
-    - name: Installer Nginx et Certbot
-      apt:
-        name:
-          - nginx
-          - certbot
-          - python3-certbot-nginx
-        state: present
-      when: xdigger_domain | length > 0
+    - name: Reverse proxy Nginx + Let's Encrypt
+      tags: [nginx, never]
+      block:
+        - name: Installer Nginx et Certbot
+          apt:
+            name:
+              - nginx
+              - certbot
+              - python3-certbot-nginx
+            state: present
 
-    - name: Déposer le vhost Nginx
-      copy:
-        dest: /etc/nginx/sites-available/x-digger.conf
-        mode: "0644"
-        content: |
-          server {
-              listen 80;
-              server_name {{ xdigger_domain }};
+        - name: Déposer le vhost Nginx
+          copy:
+            dest: /etc/nginx/sites-available/x-digger.conf
+            mode: "0644"
+            content: |
+              server {
+                  listen 80;
+                  server_name {{ xdigger_domain }};
 
-              location / {
-                  proxy_pass http://127.0.0.1:{{ xdigger_port }};
-                  proxy_http_version 1.1;
-                  proxy_set_header Host $host;
-                  proxy_set_header X-Real-IP $remote_addr;
-                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto $scheme;
+                  location / {
+                      proxy_pass http://127.0.0.1:{{ xdigger_port }};
+                      proxy_http_version 1.1;
+                      proxy_set_header Host $host;
+                      proxy_set_header X-Real-IP $remote_addr;
+                      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                      proxy_set_header X-Forwarded-Proto $scheme;
+                  }
               }
-          }
-      when: xdigger_domain | length > 0
-      register: vhost
+          register: nginx_vhost
 
-    - name: Activer le vhost
-      file:
-        src: /etc/nginx/sites-available/x-digger.conf
-        dest: /etc/nginx/sites-enabled/x-digger.conf
-        state: link
-      when: xdigger_domain | length > 0
-      register: vhost_link
+        - name: Activer le vhost
+          file:
+            src: /etc/nginx/sites-available/x-digger.conf
+            dest: /etc/nginx/sites-enabled/x-digger.conf
+            state: link
+          register: nginx_link
 
-    - name: Recharger Nginx
-      service:
-        name: nginx
-        state: reloaded
-        enabled: true
-      when: xdigger_domain | length > 0 and (vhost.changed or vhost_link.changed)
+        - name: Recharger Nginx
+          service:
+            name: nginx
+            state: reloaded
+            enabled: true
+          when: nginx_vhost.changed or nginx_link.changed
 
-    - name: Obtenir le certificat Let's Encrypt
-      command: >
-        certbot --nginx -d {{ xdigger_domain }}
-        --non-interactive --agree-tos -m {{ certbot_email }} --redirect
-      args:
-        creates: /etc/letsencrypt/live/{{ xdigger_domain }}/fullchain.pem
-      when: xdigger_domain | length > 0 and certbot_email | length > 0
+        - name: Obtenir le certificat Let's Encrypt (Nginx)
+          command: >
+            certbot --nginx -d {{ xdigger_domain }}
+            --non-interactive --agree-tos -m {{ certbot_email }} --redirect
+          args:
+            creates: /etc/letsencrypt/live/{{ xdigger_domain }}/fullchain.pem
+
+    # ---------------- Variante Apache : --tags apache ----------------
+
+    - name: Reverse proxy Apache + Let's Encrypt
+      tags: [apache, never]
+      block:
+        - name: Installer Apache et Certbot
+          apt:
+            name:
+              - apache2
+              - certbot
+              - python3-certbot-apache
+            state: present
+
+        - name: Activer les modules proxy
+          command: a2enmod proxy proxy_http headers
+          args:
+            creates: /etc/apache2/mods-enabled/proxy_http.load
+
+        - name: Déposer le vhost Apache
+          copy:
+            dest: /etc/apache2/sites-available/x-digger.conf
+            mode: "0644"
+            content: |
+              <VirtualHost *:80>
+                  ServerName {{ xdigger_domain }}
+
+                  ProxyPreserveHost On
+                  ProxyPass / http://127.0.0.1:{{ xdigger_port }}/
+                  ProxyPassReverse / http://127.0.0.1:{{ xdigger_port }}/
+                  RequestHeader set X-Forwarded-Proto "http"
+              </VirtualHost>
+          register: apache_vhost
+
+        - name: Activer le vhost
+          command: a2ensite x-digger
+          args:
+            creates: /etc/apache2/sites-enabled/x-digger.conf
+          register: apache_ensite
+
+        - name: Recharger Apache
+          service:
+            name: apache2
+            state: reloaded
+            enabled: true
+          when: apache_vhost.changed or apache_ensite.changed
+
+        - name: Obtenir le certificat Let's Encrypt (Apache)
+          command: >
+            certbot --apache -d {{ xdigger_domain }}
+            --non-interactive --agree-tos -m {{ certbot_email }} --redirect
+          args:
+            creates: /etc/letsencrypt/live/{{ xdigger_domain }}/fullchain.pem
+
+    # ---------------- Résumé ----------------
 
     - name: Résumé du déploiement
       debug:
         msg: >-
           X-Digger déployé. Admin :
-          {{ ('https://' ~ xdigger_domain) if xdigger_domain | length > 0
+          {{ ('https://' ~ xdigger_domain) if use_proxy | bool
              else ('http://<ip-serveur>:' ~ xdigger_port) }}
           — au premier accès, définis le mot de passe admin puis configure les
           clés IA et X dans l'interface.
+      tags: [always]
