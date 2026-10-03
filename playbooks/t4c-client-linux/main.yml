@@ -1,0 +1,483 @@
+---
+# T4C Client 1.72 (Linux) — https://github.com/elestranobaron/t4c-client-linux
+#
+# Ce que fait ce playbook :
+#   1. Installe les dépendances (cmake, g++, python3, SDL, megatools, outils d'archive)
+#   2. Clone t4c-client-linux
+#   3. Télécharge les assets depuis Mega dans un dossier de staging.
+#      Le lien par défaut est un dossier (client/runtime déjà au format du client Linux),
+#      pas une archive. S'il s'agit d'une archive, elle est extraite et son SHA-256
+#      est vérifié quand t4c_assets_sha256 est renseigné.
+#   4. Copie le runtime, lance scripts/setup_from_clone.sh (vérif, build, tests)
+#   5. Installe un launcher (~/.local/bin/t4c-client) et une entrée de menu .desktop
+#
+# Installation 100 % userland (XDG) : seul l'apt/pacman demande les droits root.
+# Idempotent : relancer le playbook ne retélécharge ni ne recompile ce qui est déjà en place.
+#
+# Décommissionnement (contrat ansible-temple : "remove": true dans info.json) :
+#   -e remove=true                  -> retire launcher, entrée de menu, binaire, sources,
+#                                      staging ; CONSERVE les assets du jeu (~400 Mo) dans
+#                                      ~/.local/share/t4c-client/runtime pour une réinstallation
+#                                      sans retélécharger Mega
+#   -e remove=true -e remove_data=true
+#                                   -> supprime tout, y compris les assets et ~/.local/share/t4c-client
+#   Les paquets système (cmake, g++, SDL, megatools...) ne sont jamais désinstallés :
+#   ils sont partagés avec d'autres usages.
+#
+# Usage direct :
+#   ansible-playbook playbooks/t4c-client/main.yml --ask-become-pass
+#
+#   Le lien Mega dossier est déjà le défaut. Pour une archive, surcharger :
+#   ansible-playbook playbooks/t4c-client/main.yml \
+#     -e t4c_mega_url='https://mega.nz/file/XXXX#YYYY' \
+#     -e t4c_assets_sha256='<sha256 de l archive>' \
+#     --ask-become-pass
+
+- name: Installer le client T4C 1.72 (Linux)
+  hosts: "{{ target_hosts | default('localhost') }}"
+  connection: "{{ 'local' if (target_hosts | default('localhost')) == 'localhost' else 'ssh' }}"
+  gather_facts: true
+
+  vars: &t4c_vars   # ancre YAML réutilisée par le play de décommissionnement
+    # --- Contrat ansible-temple (remove / remove_data) -------------------
+    remove: false
+    remove_data: false
+
+    # --- Options exposées par info.json ---------------------------------
+    t4c_mega_url: "https://mega.nz/folder/QjYTWZha#onemiQ24kkQmK-rWSz9VBQ"
+    t4c_assets_sha256: ""
+    t4c_server_host: "127.0.0.1"
+    t4c_server_port: 11677
+    t4c_repo_version: "main"
+
+    # --- Constantes ------------------------------------------------------
+    t4c_repo_url: "https://github.com/elestranobaron/t4c-client-linux.git"
+    t4c_home: "{{ ansible_env.HOME }}"
+    t4c_base: "{{ t4c_home }}/.local/share/t4c-client"
+    t4c_src: "{{ t4c_base }}/src"
+    t4c_staging: "{{ t4c_base }}/staging"
+    t4c_runtime: "{{ t4c_src }}/runtime"
+    t4c_binary: "{{ t4c_src }}/build/linux/t4c_client"
+    t4c_launcher: "{{ t4c_home }}/.local/bin/t4c-client"
+    t4c_desktop_file: "{{ t4c_home }}/.local/share/applications/t4c-client.desktop"
+    t4c_marker: "{{ t4c_runtime }}/Game Files/V2DataI.did"
+    # Assets conservés par un retrait sans remove_data
+    t4c_runtime_kept: "{{ t4c_base }}/runtime"
+    t4c_marker_kept: "{{ t4c_runtime_kept }}/Game Files/V2DataI.did"
+
+    t4c_packages_debian:
+      - git
+      - cmake
+      - g++
+      - make
+      - pkg-config
+      - python3
+      - megatools
+      - unzip
+      - p7zip-full
+      - libsdl2-dev
+      - libsdl2-ttf-dev
+    # SDL3 : le README annonce SDL3, SETUP.md parle de SDL2 -> on tente SDL3 sans bloquer
+    t4c_packages_debian_optional:
+      - libsdl3-dev
+      - libsdl3-ttf-dev
+    t4c_packages_arch:
+      - git
+      - cmake
+      - gcc
+      - make
+      - pkgconf
+      - python
+      - megatools
+      - unzip
+      - p7zip
+      - sdl2
+      - sdl2_ttf
+
+  pre_tasks:
+    - name: Mode retrait demandé -> passer directement au play de décommissionnement
+      ansible.builtin.meta: end_play
+      when: remove | bool
+
+    - name: Vérifier le système cible
+      ansible.builtin.assert:
+        that:
+          - ansible_system == 'Linux'
+          - ansible_os_family in ['Debian', 'Archlinux']
+        fail_msg: "Seuls Debian/Ubuntu/Arch sont pris en charge par ce playbook."
+
+    - name: Chercher des assets déjà en place ou conservés
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ t4c_marker }}"
+        - "{{ t4c_marker_kept }}"
+      register: t4c_assets_stats
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Assets disponibles localement ?
+      ansible.builtin.set_fact:
+        t4c_have_assets: "{{ t4c_assets_stats.results | map(attribute='stat.exists') | list | max }}"
+
+    - name: Exiger t4c_mega_url si aucun asset n'est disponible
+      ansible.builtin.assert:
+        that:
+          - t4c_have_assets or (t4c_mega_url | length > 0)
+        fail_msg: >-
+          Aucun asset trouvé dans {{ t4c_runtime }} et t4c_mega_url est vide.
+          Fournir -e t4c_mega_url='https://mega.nz/...'.
+
+  tasks:
+    # ------------------------------------------------------------------ 1
+    - name: Dépendances (Debian/Ubuntu)
+      ansible.builtin.apt:
+        name: "{{ t4c_packages_debian }}"
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+      become: true
+      when: ansible_os_family == 'Debian'
+
+    - name: Dépendances optionnelles SDL3 (Debian/Ubuntu, non bloquant)
+      ansible.builtin.apt:
+        name: "{{ t4c_packages_debian_optional }}"
+        state: present
+      become: true
+      when: ansible_os_family == 'Debian'
+      failed_when: false
+
+    - name: Dépendances (Arch)
+      ansible.builtin.command:
+        argv: "{{ ['pacman', '-S', '--needed', '--noconfirm'] + t4c_packages_arch }}"
+      register: t4c_pacman
+      changed_when: "'there is nothing to do' not in t4c_pacman.stdout"
+      become: true
+      when: ansible_os_family == 'Archlinux'
+
+    # ------------------------------------------------------------------ 2
+    - name: Créer l'arborescence XDG
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "{{ t4c_base }}"
+        - "{{ t4c_home }}/.local/bin"
+        - "{{ t4c_home }}/.local/share/applications"
+
+    - name: Cloner t4c-client-linux
+      ansible.builtin.git:
+        repo: "{{ t4c_repo_url }}"
+        dest: "{{ t4c_src }}"
+        version: "{{ t4c_repo_version }}"
+        update: true
+        force: false
+      register: t4c_git
+
+    - name: Restaurer les assets conservés par un retrait précédent
+      ansible.builtin.command:
+        argv: ["mv", "{{ t4c_runtime_kept }}", "{{ t4c_runtime }}"]
+        creates: "{{ t4c_runtime }}"
+        removes: "{{ t4c_runtime_kept }}"
+
+    - name: Le binaire est-il déjà compilé ?
+      ansible.builtin.stat:
+        path: "{{ t4c_binary }}"
+      register: t4c_bin_pre
+
+    # ------------------------------------------------------------------ 3
+    - name: Récupération des assets depuis Mega
+      when: not t4c_have_assets
+      block:
+        - name: Repartir d'un staging propre
+          ansible.builtin.file:
+            path: "{{ t4c_staging }}"
+            state: "{{ item }}"
+            mode: "0755"
+          loop: [absent, directory]
+
+        - name: Télécharger depuis Mega (megatools)
+          ansible.builtin.command:
+            argv:
+              - megatools
+              - dl
+              - "--path={{ t4c_staging }}"
+              - "{{ t4c_mega_url }}"
+          changed_when: true
+          register: t4c_dl
+          retries: 3
+          delay: 15
+          until: t4c_dl.rc == 0
+
+        - name: Lister les archives téléchargées
+          ansible.builtin.find:
+            paths: "{{ t4c_staging }}"
+            recurse: true
+            patterns: ["*.zip", "*.7z", "*.tar", "*.tar.gz", "*.tgz"]
+          register: t4c_archives
+
+        - name: Vérifier le SHA-256 des archives (si fourni)
+          ansible.builtin.stat:
+            path: "{{ item.path }}"
+            checksum_algorithm: sha256
+          register: t4c_sums
+          loop: "{{ t4c_archives.files }}"
+          loop_control:
+            label: "{{ item.path | basename }}"
+          when: t4c_assets_sha256 | length > 0
+
+        - name: Refuser une archive dont l'empreinte ne correspond pas
+          ansible.builtin.assert:
+            that:
+              - t4c_sums.results | map(attribute='stat.checksum') | list | select('equalto', t4c_assets_sha256 | lower) | list | length > 0
+            fail_msg: "Aucune archive téléchargée ne correspond au SHA-256 attendu."
+          when: t4c_assets_sha256 | length > 0 and t4c_archives.files | length > 0
+
+        - name: Extraire les archives
+          ansible.builtin.command:
+            argv: >-
+              {{ ['7z', 'x', '-y', '-o' ~ t4c_staging ~ '/extracted', item.path]
+                 if (item.path is search('(?i)\.(zip|7z)$'))
+                 else ['tar', '-xf', item.path, '-C', t4c_staging ~ '/extracted'] }}
+            creates: "{{ t4c_staging }}/extracted"
+          loop: "{{ t4c_archives.files }}"
+          loop_control:
+            label: "{{ item.path | basename }}"
+          when: t4c_archives.files | length > 0
+
+        - name: Repérer la racine de l'Original Client (dossier contenant « Game Files »)
+          ansible.builtin.shell: |
+            set -o pipefail
+            find "{{ t4c_staging }}" -type d -iname 'game files' -print -quit | xargs -r dirname
+          args:
+            executable: /bin/bash
+          register: t4c_client_root
+          changed_when: false
+
+        - name: Échouer clairement si le layout n'est pas reconnu
+          ansible.builtin.assert:
+            that: t4c_client_root.stdout | length > 0
+            fail_msg: >-
+              Dossier « Game Files » introuvable dans le téléchargement Mega.
+              Contenu du staging : {{ t4c_staging }}
+
+    # ------------------------------------------------------------------ 4
+    - name: Chemin de l'Original Client pour le script de setup
+      ansible.builtin.set_fact:
+        t4c_original_client: "{{ t4c_client_root.stdout | default('') if t4c_client_root is defined else '' }}"
+
+    - name: Préparer runtime/ dans les sources
+      ansible.builtin.file:
+        path: "{{ t4c_runtime }}"
+        state: directory
+        mode: "0755"
+      when: t4c_original_client | length > 0
+
+    - name: Le dossier Mega est déjà un runtime client (Music Files à côté de Game Files)
+      ansible.builtin.stat:
+        path: "{{ t4c_original_client }}/Music Files"
+      register: t4c_music_files
+      when: t4c_original_client | length > 0
+
+    # copy_runtime_assets.sh attend « music files » / « fx files » / french.elng.
+    # Ce lien Mega est déjà le layout du client Linux : on le copie tel quel,
+    # setup_from_clone.sh voit english.elng et ne relance pas cette copie.
+    - name: Copier le runtime Mega dans les sources
+      ansible.builtin.command:
+        argv:
+          - cp
+          - -a
+          - "{{ t4c_original_client }}/."
+          - "{{ t4c_runtime }}/"
+        creates: "{{ t4c_marker }}"
+      when:
+        - t4c_original_client | length > 0
+        - t4c_music_files.stat.exists | default(false)
+
+    - name: Vérification outils + assets (sans rien modifier)
+      ansible.builtin.command:
+        cmd: ./scripts/setup_from_clone.sh --check
+        chdir: "{{ t4c_src }}"
+      environment:
+        T4C_ORIGINAL_CLIENT: "{{ t4c_original_client }}"
+      register: t4c_check
+      changed_when: false
+      failed_when: false
+      when: t4c_original_client | length > 0
+
+    - name: Setup complet (copie des assets, build, tests de non-régression)
+      ansible.builtin.command:
+        cmd: ./scripts/setup_from_clone.sh
+        chdir: "{{ t4c_src }}"
+        creates: "{{ t4c_binary }}"
+      environment:
+        T4C_ORIGINAL_CLIENT: "{{ t4c_original_client | default(omit) }}"
+        T4C_RUNTIME: "{{ t4c_runtime }}"
+      register: t4c_setup
+      when: t4c_original_client | length > 0 or not t4c_have_assets
+
+    - name: Compiler si les assets sont déjà là et que le binaire manque ou que le dépôt a changé
+      ansible.builtin.command:
+        cmd: ./scripts/build_client.sh
+        chdir: "{{ t4c_src }}"
+      environment:
+        T4C_RUNTIME: "{{ t4c_runtime }}"
+      when:
+        - t4c_have_assets
+        - t4c_original_client | length == 0
+        - t4c_git.changed or not t4c_bin_pre.stat.exists
+      changed_when: true
+
+    - name: Vérifier la présence du binaire et des fichiers critiques
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: t4c_final
+      loop:
+        - "{{ t4c_binary }}"
+        - "{{ t4c_marker }}"
+        - "{{ t4c_runtime }}/Game Files/SmoothTiles.bin"
+        - "{{ t4c_runtime }}/english.elng"
+      loop_control:
+        label: "{{ item | basename }}"
+
+    - name: Échouer si un fichier critique manque
+      ansible.builtin.assert:
+        that: t4c_final.results | map(attribute='stat.exists') | list | min
+        fail_msg: "Installation incomplète : voir les stat ci-dessus (binaire ou assets manquants)."
+
+    # ------------------------------------------------------------------ 5
+    - name: Nettoyer le staging (assets déjà copiés dans runtime/)
+      ansible.builtin.file:
+        path: "{{ t4c_staging }}"
+        state: absent
+
+    - name: Installer le launcher
+      ansible.builtin.copy:
+        dest: "{{ t4c_launcher }}"
+        mode: "0755"
+        content: |
+          #!/usr/bin/env bash
+          # Généré par le playbook t4c-client — ne pas éditer à la main.
+          export T4C_RUNTIME="${T4C_RUNTIME:-{{ t4c_runtime }}}"
+          HOST="${1:-{{ t4c_server_host }}}"
+          PORT="${2:-{{ t4c_server_port }}}"
+          cd "$T4C_RUNTIME" || exit 1
+          exec "{{ t4c_binary }}" "$HOST" "$PORT"
+
+    - name: Installer l'entrée de menu
+      ansible.builtin.copy:
+        dest: "{{ t4c_desktop_file }}"
+        mode: "0644"
+        content: |
+          [Desktop Entry]
+          Type=Application
+          Name=The 4th Coming 1.72
+          Comment=Client T4C 1.72 (SDL)
+          Exec={{ t4c_launcher }}
+          Terminal=false
+          Categories=Game;RolePlaying;
+
+    - name: Rafraîchir la base des entrées de menu
+      ansible.builtin.command: update-desktop-database "{{ t4c_home }}/.local/share/applications"
+      changed_when: false
+      failed_when: false
+
+  post_tasks:
+    - name: Résumé
+      ansible.builtin.debug:
+        msg:
+          - "T4C Client installé dans {{ t4c_base }}"
+          - "Lancer : t4c-client [hôte] [port]   (défaut {{ t4c_server_host }}:{{ t4c_server_port }})"
+          - "Si ~/.local/bin n'est pas dans le PATH, utiliser {{ t4c_launcher }}"
+
+# =====================================================================
+# Décommissionnement — déclenché par remove=true (ansible-temple : bouton Remove)
+# =====================================================================
+- name: Décommissionner le client T4C 1.72 (Linux)
+  hosts: "{{ target_hosts | default('localhost') }}"
+  connection: "{{ 'local' if (target_hosts | default('localhost')) == 'localhost' else 'ssh' }}"
+  gather_facts: true
+  vars: *t4c_vars
+
+  pre_tasks:
+    - name: Mode installation -> rien à retirer
+      ansible.builtin.meta: end_play
+      when: not (remove | bool)
+
+    - name: Chercher des assets aux deux emplacements
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ t4c_runtime }}"
+        - "{{ t4c_runtime_kept }}"
+      register: t4c_rm_stats
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Refuser un état ambigu (assets présents à deux endroits)
+      ansible.builtin.assert:
+        that: >-
+          (remove_data | bool) or
+          (t4c_rm_stats.results | map(attribute='stat.exists') | list | select | list | length) < 2
+        fail_msg: >-
+          {{ t4c_runtime }} et {{ t4c_runtime_kept }} existent tous les deux : fusionner ou
+          supprimer l'un des deux à la main, ou relancer avec remove_data=true.
+
+  tasks:
+    # --- 1. Arrêter proprement le client s'il tourne ---------------------
+    - name: Arrêter le client en cours (SIGTERM puis SIGKILL)
+      ansible.builtin.shell: |
+        pkill -u "$(id -u)" -x t4c_client || exit 0
+        for i in 1 2 3 4 5; do pgrep -u "$(id -u)" -x t4c_client >/dev/null || exit 0; sleep 1; done
+        pkill -KILL -u "$(id -u)" -x t4c_client; exit 0
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    # --- 2. Intégration bureau ---------------------------------------------
+    - name: Supprimer le launcher et l'entrée de menu
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ t4c_launcher }}"
+        - "{{ t4c_desktop_file }}"
+
+    - name: Rafraîchir la base des entrées de menu
+      ansible.builtin.command: update-desktop-database "{{ t4c_home }}/.local/share/applications"
+      changed_when: false
+      failed_when: false
+
+    # --- 3a. Retrait en conservant les assets ------------------------------
+    - name: Conserver les assets du jeu (retrait sans remove_data)
+      when: not (remove_data | bool)
+      block:
+        - name: Mettre les assets de côté avant de supprimer les sources
+          ansible.builtin.command:
+            argv: ["mv", "{{ t4c_runtime }}", "{{ t4c_runtime_kept }}"]
+            creates: "{{ t4c_runtime_kept }}"
+            removes: "{{ t4c_runtime }}"
+
+        - name: Supprimer sources, build et staging
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - "{{ t4c_src }}"
+            - "{{ t4c_staging }}"
+
+    # --- 3b. Retrait intégral ----------------------------------------------
+    - name: Supprimer toutes les données (remove_data=true)
+      ansible.builtin.file:
+        path: "{{ t4c_base }}"
+        state: absent
+      when: remove_data | bool
+
+  post_tasks:
+    - name: Résumé
+      ansible.builtin.debug:
+        msg:
+          - "T4C Client retiré (launcher, menu, binaire, sources)."
+          - "{{ 'Données supprimées : ' ~ t4c_base ~ ' effacé.' if (remove_data | bool) else 'Assets conservés dans ' ~ t4c_runtime_kept ~ ' (remove_data=true pour tout effacer).' }}"
+          - "Paquets système (cmake, g++, SDL, megatools) laissés en place."
