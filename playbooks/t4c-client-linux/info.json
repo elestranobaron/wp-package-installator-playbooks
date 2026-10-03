@@ -1,0 +1,40 @@
+{
+  "id": "t4c-client",
+  "name": "T4C Client 1.72 (Linux)",
+  "category": "Games",
+  "description": "Client The 4th Coming 1.72 (SDL) : clone t4c-client-linux, récupère les assets depuis Mega, compile et installe proprement dans ~/.local (launcher + entrée de menu).",
+  "playbook": "playbooks/t4c-client/main.yml",
+  "remove": true,
+  "options": [
+    {
+      "key": "t4c_mega_url",
+      "label": "Lien Mega des assets (Original Client 1.72)",
+      "type": "text",
+      "default": "https://mega.nz/folder/QjYTWZha#onemiQ24kkQmK-rWSz9VBQ"
+    },
+    {
+      "key": "t4c_assets_sha256",
+      "label": "SHA-256 de l'archive (optionnel, recommandé)",
+      "type": "text",
+      "default": ""
+    },
+    {
+      "key": "t4c_server_host",
+      "label": "Serveur par défaut",
+      "type": "text",
+      "default": "127.0.0.1"
+    },
+    {
+      "key": "t4c_server_port",
+      "label": "Port serveur",
+      "type": "number",
+      "default": 11677
+    },
+    {
+      "key": "t4c_repo_version",
+      "label": "Branche / tag du client",
+      "type": "text",
+      "default": "main"
+    }
+  ]
+}
