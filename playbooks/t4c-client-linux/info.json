@@ -3,7 +3,7 @@
   "name": "T4C Client 1.72 (Linux)",
   "category": "Games",
   "description": "Client The 4th Coming 1.72 (SDL) : clone t4c-client-linux, récupère les assets depuis Mega, compile et installe proprement dans ~/.local (launcher + entrée de menu).",
-  "playbook": "playbooks/t4c-client/main.yml",
+  "playbook": "playbooks/t4c-client-linux/main.yml",
   "remove": true,
   "options": [
     {
