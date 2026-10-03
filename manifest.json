@@ -2,100 +2,6 @@
   "version": "1.0.0",
   "packages": [
     {
-      "id": "p2p-sport-env",
-      "name": "P2P Sport — Environnement de développement",
-      "category": "Dev",
-      "description": "Prépare une machine Debian pour le développement du réseau social sport décentralisé : Node.js 20, ffmpeg, Docker, Docker Compose, et clone les 3 repos (core-p2p, sport-lexicon, sport-app).",
-      "playbook": "playbooks/p2p-sport-env/main.yml",
-      "author": "Thomas Lloancy",
-      "version": "1.0.0",
-      "options": [
-        {
-          "key": "github_user",
-          "label": "Nom d'utilisateur GitHub",
-          "type": "text",
-          "default": "tlloancy"
-        },
-        {
-          "key": "install_dir",
-          "label": "Répertoire d'installation",
-          "type": "text",
-          "default": "/opt/p2p-sport"
-        }
-      ]
-    },
-    {
-      "name": "Freqtrade",
-      "description": "Free and open-source crypto trading bot written in Python. It is designed to support all major exchanges and be controlled via Telegram or a WebUI.",
-      "version": "1.0.0",
-      "category": "Trading",
-      "icon": "📈",
-      "options": [
-        {
-          "id": "freqtrade_dir",
-          "type": "text",
-          "label": "Installation Directory",
-          "default": "/opt/freqtrade",
-          "description": "Absolute path where Freqtrade data and configuration will be stored."
-        },
-        {
-          "id": "freqtrade_port",
-          "type": "number",
-          "label": "WebUI Port",
-          "default": 8080,
-          "description": "The port used to access the Freqtrade internal web interface."
-        },
-        {
-          "id": "freqtrade_dry_run",
-          "type": "boolean",
-          "label": "Enable Dry-Run (Sandbox)",
-          "default": true,
-          "description": "Keep this enabled to trade with simulated money safely. Disable for live trading."
-        }
-      ]
-    },
-    {
-      "name": "WordPress (Natif Multi-Distro)",
-      "description": "Installation complète de WordPress avec Apache (backend), Nginx (proxy inverse), MariaDB, Fail2Ban et Certbot SSL automatique.",
-      "options": [
-        {
-          "name": "wp_db_name",
-          "type": "text",
-          "default": "wordpress",
-          "label": "Nom de la base de données MySQL"
-        },
-        {
-          "name": "wp_db_user",
-          "type": "text",
-          "default": "wordpress",
-          "label": "Utilisateur MySQL"
-        },
-        {
-          "name": "wp_db_password",
-          "type": "password",
-          "label": "Mot de passe Root & User MySQL (Sera aussi utilisé pour sécuriser l'installation)"
-        },
-        {
-          "name": "apache_port",
-          "type": "number",
-          "default": 8080,
-          "label": "Port d'écoute interne Apache (HTTP)"
-        },
-        {
-          "name": "apache_ssl_port",
-          "type": "number",
-          "default": 8081,
-          "label": "Port d'écoute interne Apache (HTTPS)"
-        },
-        {
-          "name": "wordpress_install_dir",
-          "type": "text",
-          "default": "/var/www/html/wordpress",
-          "label": "Répertoire d'installation de WordPress (RedHat/Arch)"
-        }
-      ]
-    },
-    {
       "id": "t4c-server-linux",
       "name": "T4C Server Linux 1.72",
       "category": "Games",
@@ -188,6 +94,115 @@
       ]
     },
     {
+      "id": "t4c-client",
+      "name": "T4C Client 1.72 (Linux)",
+      "category": "Games",
+      "description": "Client The 4th Coming 1.72 (SDL) : clone t4c-client-linux, récupère les assets depuis Mega, compile et installe proprement dans ~/.local (launcher + entrée de menu).",
+      "playbook": "playbooks/t4c-client/main.yml",
+      "remove": true,
+      "options": [
+        {
+          "key": "t4c_mega_url",
+          "label": "Lien Mega des assets (Original Client 1.72)",
+          "type": "text",
+          "default": "https://mega.nz/folder/QjYTWZha#onemiQ24kkQmK-rWSz9VBQ"
+        },
+        {
+          "key": "t4c_assets_sha256",
+          "label": "SHA-256 de l'archive (optionnel, recommandé)",
+          "type": "text",
+          "default": ""
+        },
+        {
+          "key": "t4c_server_host",
+          "label": "Serveur par défaut",
+          "type": "text",
+          "default": "127.0.0.1"
+        },
+        {
+          "key": "t4c_server_port",
+          "label": "Port serveur",
+          "type": "number",
+          "default": 11677
+        },
+        {
+          "key": "t4c_repo_version",
+          "label": "Branche / tag du client",
+          "type": "text",
+          "default": "main"
+        }
+      ]
+    },
+    {
+      "id": "redis",
+      "name": "Redis Standalone",
+      "category": "Database",
+      "description": "Instance Redis simple pour le cache ou les files d'attente.",
+      "playbook": "playbooks/redis/main.yml",
+      "options": [
+        {
+          "key": "redis_port",
+          "label": "Port",
+          "type": "number",
+          "default": 6379
+        }
+      ]
+    },
+    {
+      "id": "dummy-check",
+      "name": "Dummy Healthcheck",
+      "version": "1.0.0",
+      "author": "Automation",
+      "category": "Maintenance",
+      "description": "Playbook de test ultra-léger pour vérifier la liaison Ansible.",
+      "playbook": "playbooks/dummy-test/main.yml",
+      "options": []
+    },
+    {
+      "id": "p2p-sport-env",
+      "name": "P2P Sport — Environnement de développement",
+      "category": "Dev",
+      "description": "Prépare une machine Debian pour le développement du réseau social sport décentralisé : Node.js 20, ffmpeg, Docker, Docker Compose, et clone les 3 repos (core-p2p, sport-lexicon, sport-app).",
+      "playbook": "playbooks/p2p-sport-env/main.yml",
+      "author": "Thomas Lloancy",
+      "version": "1.0.0",
+      "options": [
+        {
+          "key": "github_user",
+          "label": "Nom d'utilisateur GitHub",
+          "type": "text",
+          "default": "tlloancy"
+        },
+        {
+          "key": "install_dir",
+          "label": "Répertoire d'installation",
+          "type": "text",
+          "default": "/opt/p2p-sport"
+        }
+      ]
+    },
+    {
+      "id": "mariadb",
+      "name": "MariaDB Server",
+      "category": "Database",
+      "description": "Base de données SQL relationnelle.",
+      "playbook": "playbooks/mariadb/main.yml",
+      "options": [
+        {
+          "key": "db_root_password",
+          "label": "Mot de passe Root",
+          "type": "password",
+          "default": "secret"
+        },
+        {
+          "key": "db_port",
+          "label": "Port",
+          "type": "number",
+          "default": 3306
+        }
+      ]
+    },
+    {
       "name": "osTicket (Docker)",
       "description": "Déploiement du célèbre gestionnaire de tickets osTicket via Docker-Compose, adossé à une base MySQL.",
       "options": [
@@ -228,50 +243,141 @@
       ]
     },
     {
-      "id": "redis",
-      "name": "Redis Standalone",
-      "category": "Database",
-      "description": "Instance Redis simple pour le cache ou les files d'attente.",
-      "playbook": "playbooks/redis/main.yml",
+      "name": "Freqtrade",
+      "description": "Free and open-source crypto trading bot written in Python. It is designed to support all major exchanges and be controlled via Telegram or a WebUI.",
+      "version": "1.0.0",
+      "category": "Trading",
+      "icon": "📈",
       "options": [
         {
-          "key": "redis_port",
-          "label": "Port",
-          "type": "number",
-          "default": 6379
-        }
-      ]
-    },
-    {
-      "id": "mariadb",
-      "name": "MariaDB Server",
-      "category": "Database",
-      "description": "Base de données SQL relationnelle.",
-      "playbook": "playbooks/mariadb/main.yml",
-      "options": [
-        {
-          "key": "db_root_password",
-          "label": "Mot de passe Root",
-          "type": "password",
-          "default": "secret"
+          "id": "freqtrade_dir",
+          "type": "text",
+          "label": "Installation Directory",
+          "default": "/opt/freqtrade",
+          "description": "Absolute path where Freqtrade data and configuration will be stored."
         },
         {
-          "key": "db_port",
-          "label": "Port",
+          "id": "freqtrade_port",
           "type": "number",
-          "default": 3306
+          "label": "WebUI Port",
+          "default": 8080,
+          "description": "The port used to access the Freqtrade internal web interface."
+        },
+        {
+          "id": "freqtrade_dry_run",
+          "type": "boolean",
+          "label": "Enable Dry-Run (Sandbox)",
+          "default": true,
+          "description": "Keep this enabled to trade with simulated money safely. Disable for live trading."
         }
       ]
     },
     {
-      "id": "dummy-check",
-      "name": "Dummy Healthcheck",
+      "id": "redis-cluster",
+      "name": "Redis Cluster",
+      "category": "Database",
+      "description": "Cluster Redis haute disponibilité (3 maîtres, 3 esclaves).",
+      "playbook": "playbooks/redis-cluster/main.yml",
+      "options": [
+        {
+          "key": "start_port",
+          "label": "Port de départ",
+          "type": "number",
+          "default": 7000
+        }
+      ]
+    },
+    {
+      "name": "WordPress (Natif Multi-Distro)",
+      "description": "Installation complète de WordPress avec Apache (backend), Nginx (proxy inverse), MariaDB, Fail2Ban et Certbot SSL automatique.",
+      "options": [
+        {
+          "name": "wp_db_name",
+          "type": "text",
+          "default": "wordpress",
+          "label": "Nom de la base de données MySQL"
+        },
+        {
+          "name": "wp_db_user",
+          "type": "text",
+          "default": "wordpress",
+          "label": "Utilisateur MySQL"
+        },
+        {
+          "name": "wp_db_password",
+          "type": "password",
+          "label": "Mot de passe Root & User MySQL (Sera aussi utilisé pour sécuriser l'installation)"
+        },
+        {
+          "name": "apache_port",
+          "type": "number",
+          "default": 8080,
+          "label": "Port d'écoute interne Apache (HTTP)"
+        },
+        {
+          "name": "apache_ssl_port",
+          "type": "number",
+          "default": 8081,
+          "label": "Port d'écoute interne Apache (HTTPS)"
+        },
+        {
+          "name": "wordpress_install_dir",
+          "type": "text",
+          "default": "/var/www/html/wordpress",
+          "label": "Répertoire d'installation de WordPress (RedHat/Arch)"
+        }
+      ]
+    },
+    {
+      "name": "X-Digger (bot X automatisé)",
+      "category": "Automation",
+      "icon": "🤖",
       "version": "1.0.0",
-      "author": "Automation",
-      "category": "Maintenance",
-      "description": "Playbook de test ultra-léger pour vérifier la liaison Ansible.",
-      "playbook": "playbooks/dummy-test/main.yml",
-      "options": []
+      "description": "Bot X (Twitter) 100% automatisé : tweets d'actualité générés par IA (Claude, GPT, Gemini, Grok...) depuis des flux RSS, avec admin web complète. Mono-conteneur Docker, SQLite embarquée, clés API chiffrées. Reverse proxy au choix via tags Ansible natifs : --tags nginx ou --tags apache (rien = app seule).",
+      "options": [
+        {
+          "name": "github_token",
+          "type": "text",
+          "default": "",
+          "label": "Token GitHub (PAT) — requis car le dépôt x-digger est privé"
+        },
+        {
+          "name": "xdigger_repo",
+          "type": "text",
+          "default": "https://github.com/elestranobaron/x-digger.git",
+          "label": "URL du dépôt Git"
+        },
+        {
+          "name": "xdigger_dir",
+          "type": "text",
+          "default": "/opt/x-digger",
+          "label": "Répertoire d'installation"
+        },
+        {
+          "name": "xdigger_port",
+          "type": "number",
+          "default": 3010,
+          "label": "Port HTTP de l'admin"
+        },
+        {
+          "name": "app_secret",
+          "type": "text",
+          "default": "",
+          "label": "APP_SECRET (chiffrement des clés API) — laisser vide pour auto-générer"
+        },
+        {
+          "name": "xdigger_domain",
+          "type": "text",
+          "default": "",
+          "label": "Domaine pour l'admin en HTTPS (ex: bot.mondomaine.com) — requis avec --tags nginx/apache"
+        },
+        {
+          "name": "certbot_email",
+          "type": "text",
+          "default": "",
+          "label": "Email Let's Encrypt (requis si domaine renseigné)"
+        }
+      ]
     },
     {
       "id": "radio42-server",
@@ -350,72 +456,6 @@
           "label": "Dossier de déploiement",
           "type": "text",
           "default": "/opt/radio42"
-        }
-      ]
-    },
-    {
-      "id": "redis-cluster",
-      "name": "Redis Cluster",
-      "category": "Database",
-      "description": "Cluster Redis haute disponibilité (3 maîtres, 3 esclaves).",
-      "playbook": "playbooks/redis-cluster/main.yml",
-      "options": [
-        {
-          "key": "start_port",
-          "label": "Port de départ",
-          "type": "number",
-          "default": 7000
-        }
-      ]
-    },
-    {
-      "name": "X-Digger (bot X automatisé)",
-      "category": "Automation",
-      "icon": "🤖",
-      "version": "1.0.0",
-      "description": "Bot X (Twitter) 100% automatisé : tweets d'actualité générés par IA (Claude, GPT, Gemini, Grok...) depuis des flux RSS, avec admin web complète. Mono-conteneur Docker, SQLite embarquée, clés API chiffrées. Reverse proxy au choix via tags Ansible natifs : --tags nginx ou --tags apache (rien = app seule).",
-      "options": [
-        {
-          "name": "github_token",
-          "type": "text",
-          "default": "",
-          "label": "Token GitHub (PAT) — requis car le dépôt x-digger est privé"
-        },
-        {
-          "name": "xdigger_repo",
-          "type": "text",
-          "default": "https://github.com/elestranobaron/x-digger.git",
-          "label": "URL du dépôt Git"
-        },
-        {
-          "name": "xdigger_dir",
-          "type": "text",
-          "default": "/opt/x-digger",
-          "label": "Répertoire d'installation"
-        },
-        {
-          "name": "xdigger_port",
-          "type": "number",
-          "default": 3010,
-          "label": "Port HTTP de l'admin"
-        },
-        {
-          "name": "app_secret",
-          "type": "text",
-          "default": "",
-          "label": "APP_SECRET (chiffrement des clés API) — laisser vide pour auto-générer"
-        },
-        {
-          "name": "xdigger_domain",
-          "type": "text",
-          "default": "",
-          "label": "Domaine pour l'admin en HTTPS (ex: bot.mondomaine.com) — requis avec --tags nginx/apache"
-        },
-        {
-          "name": "certbot_email",
-          "type": "text",
-          "default": "",
-          "label": "Email Let's Encrypt (requis si domaine renseigné)"
         }
       ]
     }
