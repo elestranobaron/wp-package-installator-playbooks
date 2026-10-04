@@ -77,6 +77,7 @@
       - p7zip-full
     # CMake exige le module pkg-config sdl3, absent des dépôts Debian/Ubuntu/Mint.
     t4c_sdl3_tag: release-3.2.30
+    t4c_sdl3_ttf_tag: release-3.2.2
     t4c_pkgconfig: "{{ t4c_home }}/.local/lib/pkgconfig:{{ t4c_home }}/.local/lib/x86_64-linux-gnu/pkgconfig"
     t4c_packages_arch:
       - git
@@ -183,6 +184,51 @@
       environment:
         PKG_CONFIG_PATH: "{{ t4c_pkgconfig }}"
       when: t4c_sdl3_pc.rc != 0
+
+    - name: SDL3_ttf déjà visible par pkg-config ?
+      ansible.builtin.command: pkg-config --exists sdl3-ttf
+      environment:
+        PKG_CONFIG_PATH: "{{ t4c_pkgconfig }}"
+      register: t4c_sdl3_ttf_pc
+      changed_when: false
+      failed_when: false
+
+    - name: En-têtes pour compiler SDL3_ttf (Debian/Ubuntu)
+      ansible.builtin.apt:
+        name:
+          - libfreetype6-dev
+          - libharfbuzz-dev
+        state: present
+      become: true
+      when:
+        - ansible_os_family == 'Debian'
+        - t4c_sdl3_ttf_pc.rc != 0
+
+    - name: Récupérer SDL3_ttf
+      ansible.builtin.git:
+        repo: https://github.com/libsdl-org/SDL_ttf.git
+        dest: "{{ t4c_base }}/SDL_ttf"
+        version: "{{ t4c_sdl3_ttf_tag }}"
+        depth: 1
+      when: t4c_sdl3_ttf_pc.rc != 0
+
+    - name: Installer SDL3_ttf dans ~/.local
+      ansible.builtin.shell: |
+        set -euo pipefail
+        cmake -S "{{ t4c_base }}/SDL_ttf" -B "{{ t4c_base }}/SDL_ttf/build" \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_INSTALL_PREFIX="{{ t4c_home }}/.local" \
+          -DSDLTTF_VENDORED=OFF
+        cmake --build "{{ t4c_base }}/SDL_ttf/build" -j"$(nproc)"
+        cmake --install "{{ t4c_base }}/SDL_ttf/build"
+      args:
+        executable: /bin/bash
+      environment:
+        PKG_CONFIG_PATH: "{{ t4c_pkgconfig }}"
+        CMAKE_PREFIX_PATH: "{{ t4c_home }}/.local"
+        LIBRARY_PATH: "{{ t4c_home }}/.local/lib"
+        CPLUS_INCLUDE_PATH: "{{ t4c_home }}/.local/include"
+      when: t4c_sdl3_ttf_pc.rc != 0
 
     - name: Dépendances (Arch)
       ansible.builtin.command:
@@ -354,6 +400,8 @@
         T4C_RUNTIME: "{{ t4c_runtime }}"
         PKG_CONFIG_PATH: "{{ t4c_pkgconfig }}"
         CMAKE_PREFIX_PATH: "{{ t4c_home }}/.local"
+        LIBRARY_PATH: "{{ t4c_home }}/.local/lib"
+        CPLUS_INCLUDE_PATH: "{{ t4c_home }}/.local/include"
       register: t4c_setup
       when: t4c_original_client | length > 0 or not t4c_have_assets
 
@@ -365,6 +413,8 @@
         T4C_RUNTIME: "{{ t4c_runtime }}"
         PKG_CONFIG_PATH: "{{ t4c_pkgconfig }}"
         CMAKE_PREFIX_PATH: "{{ t4c_home }}/.local"
+        LIBRARY_PATH: "{{ t4c_home }}/.local/lib"
+        CPLUS_INCLUDE_PATH: "{{ t4c_home }}/.local/include"
       when:
         - t4c_have_assets
         - t4c_original_client | length == 0
