@@ -249,7 +249,8 @@
         - name: Repérer la racine de l'Original Client (dossier contenant « Game Files »)
           ansible.builtin.shell: |
             set -o pipefail
-            find "{{ t4c_staging }}" -type d -iname 'game files' -print -quit | xargs -r dirname
+            found=$(find "{{ t4c_staging }}" -type d -iname 'game files' -print -quit)
+            [[ -n "$found" ]] && dirname "$found"
           args:
             executable: /bin/bash
           register: t4c_client_root
