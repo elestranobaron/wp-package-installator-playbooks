@@ -75,12 +75,9 @@
       - megatools
       - unzip
       - p7zip-full
-      - libsdl2-dev
-      - libsdl2-ttf-dev
-    # SDL3 : le README annonce SDL3, SETUP.md parle de SDL2 -> on tente SDL3 sans bloquer
-    t4c_packages_debian_optional:
-      - libsdl3-dev
-      - libsdl3-ttf-dev
+    # CMake exige le module pkg-config sdl3, absent des dépôts Debian/Ubuntu/Mint.
+    t4c_sdl3_tag: release-3.2.30
+    t4c_pkgconfig: "{{ t4c_home }}/.local/lib/pkgconfig:{{ t4c_home }}/.local/lib/x86_64-linux-gnu/pkgconfig"
     t4c_packages_arch:
       - git
       - cmake
@@ -91,8 +88,6 @@
       - megatools
       - unzip
       - p7zip
-      - sdl2
-      - sdl2_ttf
 
   pre_tasks:
     - name: Mode retrait demandé -> passer directement au play de décommissionnement
@@ -139,13 +134,55 @@
       become: true
       when: ansible_os_family == 'Debian'
 
-    - name: Dépendances optionnelles SDL3 (Debian/Ubuntu, non bloquant)
+    - name: SDL3 déjà visible par pkg-config ?
+      ansible.builtin.command: pkg-config --exists sdl3
+      environment:
+        PKG_CONFIG_PATH: "{{ t4c_pkgconfig }}"
+      register: t4c_sdl3_pc
+      changed_when: false
+      failed_when: false
+
+    - name: En-têtes pour compiler SDL3 (Debian/Ubuntu)
       ansible.builtin.apt:
-        name: "{{ t4c_packages_debian_optional }}"
+        name:
+          - libx11-dev
+          - libxext-dev
+          - libxrandr-dev
+          - libxcursor-dev
+          - libxi-dev
+          - libxfixes-dev
+          - libgl1-mesa-dev
+          - libasound2-dev
+          - libpulse-dev
+          - libudev-dev
+          - libdbus-1-dev
         state: present
       become: true
-      when: ansible_os_family == 'Debian'
-      failed_when: false
+      when:
+        - ansible_os_family == 'Debian'
+        - t4c_sdl3_pc.rc != 0
+
+    - name: Récupérer SDL3
+      ansible.builtin.git:
+        repo: https://github.com/libsdl-org/SDL.git
+        dest: "{{ t4c_base }}/SDL"
+        version: "{{ t4c_sdl3_tag }}"
+        depth: 1
+      when: t4c_sdl3_pc.rc != 0
+
+    - name: Installer SDL3 dans ~/.local
+      ansible.builtin.shell: |
+        set -euo pipefail
+        cmake -S "{{ t4c_base }}/SDL" -B "{{ t4c_base }}/SDL/build" \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_INSTALL_PREFIX="{{ t4c_home }}/.local"
+        cmake --build "{{ t4c_base }}/SDL/build" -j"$(nproc)"
+        cmake --install "{{ t4c_base }}/SDL/build"
+      args:
+        executable: /bin/bash
+      environment:
+        PKG_CONFIG_PATH: "{{ t4c_pkgconfig }}"
+      when: t4c_sdl3_pc.rc != 0
 
     - name: Dépendances (Arch)
       ansible.builtin.command:
@@ -315,6 +352,8 @@
       environment:
         T4C_ORIGINAL_CLIENT: "{{ t4c_original_client | default(omit) }}"
         T4C_RUNTIME: "{{ t4c_runtime }}"
+        PKG_CONFIG_PATH: "{{ t4c_pkgconfig }}"
+        CMAKE_PREFIX_PATH: "{{ t4c_home }}/.local"
       register: t4c_setup
       when: t4c_original_client | length > 0 or not t4c_have_assets
 
@@ -324,6 +363,8 @@
         chdir: "{{ t4c_src }}"
       environment:
         T4C_RUNTIME: "{{ t4c_runtime }}"
+        PKG_CONFIG_PATH: "{{ t4c_pkgconfig }}"
+        CMAKE_PREFIX_PATH: "{{ t4c_home }}/.local"
       when:
         - t4c_have_assets
         - t4c_original_client | length == 0
