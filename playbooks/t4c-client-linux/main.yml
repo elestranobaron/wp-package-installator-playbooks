@@ -452,6 +452,7 @@
           #!/usr/bin/env bash
           # Généré par le playbook t4c-client — ne pas éditer à la main.
           export T4C_RUNTIME="${T4C_RUNTIME:-{{ t4c_runtime }}}"
+          export LD_LIBRARY_PATH="{{ t4c_home }}/.local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           HOST="${1:-{{ t4c_server_host }}}"
           PORT="${2:-{{ t4c_server_port }}}"
           cd "$T4C_RUNTIME" || exit 1
